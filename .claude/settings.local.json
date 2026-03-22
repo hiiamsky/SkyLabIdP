@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /Users/skyhsieh/skylab/product/SkyLabIdP/tests -name *.csproj)"
+    ]
+  }
+}

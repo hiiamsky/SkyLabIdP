@@ -1,0 +1,223 @@
+using Xunit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Logging;
+using SkyLabIdP.Application.Common.Interfaces;
+using SkyLabIdP.Data.Services;
+using SkyLabIdP.Data.Contexts;
+using Microsoft.EntityFrameworkCore;
+using SkyLabIdP.Domain.Entities;
+using Microsoft.Extensions.Caching.Memory;
+
+namespace Application.UnitTests.Data.Services;
+
+/// <summary>
+/// 權限提供者服務測試
+/// 驗證權限查詢、快取機制和錯誤處理功能
+/// </summary>
+public class PermissionProviderTests : IDisposable
+{
+    private readonly ApplicationDbContext _context;
+    private readonly IDistributedCache _cache;
+    private readonly ILogger<PermissionProvider> _logger;
+    private readonly PermissionProvider _permissionProvider;
+
+    public PermissionProviderTests()
+    {
+        // 設定記憶體資料庫
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+        
+        _context = new ApplicationDbContext(options);
+        
+        // 設定記憶體快取
+        var services = new ServiceCollection();
+        services.AddMemoryCache();
+        services.AddStackExchangeRedisCache(options =>
+        {
+            options.Configuration = "localhost:6379";
+        });
+        
+        // 使用記憶體快取代替 Redis 進行測試
+        var serviceProvider = services.BuildServiceProvider();
+        _cache = new MemoryDistributedCache(
+            serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<MemoryDistributedCacheOptions>>(),
+            serviceProvider.GetRequiredService<ILoggerFactory>()
+        );
+        
+        // 設定 Logger
+        var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+        _logger = loggerFactory.CreateLogger<PermissionProvider>();
+        
+        _permissionProvider = new PermissionProvider(_context, _cache, _logger);
+    }
+
+    [Fact]
+    public async Task GetUserPermissionAsync_WithValidUserAndFunction_ShouldReturnCorrectPermission()
+    {
+        // Arrange
+        var userId = "test-user-123";
+        var functionName = "DocCatalog";
+        var expectedPermission = 511; // 所有權限
+
+        // 在資料庫中建立測試權限資料
+        var userClaim = new ApplicationUserClaim
+        {
+            UserId = userId,
+            ClaimType = $"{functionName}.Permissions",
+            ClaimValue = expectedPermission.ToString()
+        };
+        
+        _context.UserClaims.Add(userClaim);
+        await _context.SaveChangesAsync();
+
+        // Act
+        var result = await _permissionProvider.GetUserPermissionAsync(userId, functionName);
+
+        // Assert
+        Assert.Equal(expectedPermission, result);
+    }
+
+    [Fact]
+    public async Task GetUserPermissionAsync_WithInvalidUser_ShouldReturnZero()
+    {
+        // Arrange
+        var userId = "non-existent-user";
+        var functionName = "DocCatalog";
+
+        // Act
+        var result = await _permissionProvider.GetUserPermissionAsync(userId, functionName);
+
+        // Assert
+        Assert.Equal(0, result);
+    }
+
+    [Fact]
+    public async Task GetUserPermissionAsync_WithEmptyUserId_ShouldReturnZero()
+    {
+        // Arrange
+        var userId = "";
+        var functionName = "DocCatalog";
+
+        // Act
+        var result = await _permissionProvider.GetUserPermissionAsync(userId, functionName);
+
+        // Assert
+        Assert.Equal(0, result);
+    }
+
+    [Fact]
+    public async Task GetUserAllPermissionsAsync_WithValidUser_ShouldReturnAllPermissions()
+    {
+        // Arrange
+        var userId = "test-user-456";
+        var permissions = new Dictionary<string, int>
+        {
+            { "DocCatalog", 255 },
+            { "CaseFileData", 127 },
+            { "UserManagement", 63 }
+        };
+
+        // 在資料庫中建立測試權限資料
+        foreach (var permission in permissions)
+        {
+            var userClaim = new ApplicationUserClaim
+            {
+                UserId = userId,
+                ClaimType = $"{permission.Key}.Permissions",
+                ClaimValue = permission.Value.ToString()
+            };
+            _context.UserClaims.Add(userClaim);
+        }
+        await _context.SaveChangesAsync();
+
+        // Act
+        var result = await _permissionProvider.GetUserAllPermissionsAsync(userId);
+
+        // Assert
+        Assert.Equal(permissions.Count, result.Count);
+        foreach (var permission in permissions)
+        {
+            Assert.True(result.ContainsKey(permission.Key));
+            Assert.Equal(permission.Value, result[permission.Key]);
+        }
+    }
+
+    [Fact]
+    public async Task GetUserPermissionAsync_CalledTwice_ShouldUseCache()
+    {
+        // Arrange
+        var userId = "cache-test-user";
+        var functionName = "DocCatalog";
+        var expectedPermission = 123;
+
+        var userClaim = new ApplicationUserClaim
+        {
+            UserId = userId,
+            ClaimType = $"{functionName}.Permissions",
+            ClaimValue = expectedPermission.ToString()
+        };
+        
+        _context.UserClaims.Add(userClaim);
+        await _context.SaveChangesAsync();
+
+        // Act - 第一次調用
+        var result1 = await _permissionProvider.GetUserPermissionAsync(userId, functionName);
+        
+        // 移除資料庫中的資料來測試快取
+        _context.UserClaims.Remove(userClaim);
+        await _context.SaveChangesAsync();
+        
+        // 第二次調用應該從快取取得
+        var result2 = await _permissionProvider.GetUserPermissionAsync(userId, functionName);
+
+        // Assert
+        Assert.Equal(expectedPermission, result1);
+        Assert.Equal(expectedPermission, result2); // 應該從快取取得相同值
+    }
+
+    [Fact]
+    public async Task InvalidateUserPermissionCacheAsync_ShouldClearCache()
+    {
+        // Arrange
+        var userId = "cache-invalidate-test";
+        var functionName = "DocCatalog";
+        var originalPermission = 456;
+        var updatedPermission = 789;
+
+        // 建立初始權限
+        var userClaim = new ApplicationUserClaim
+        {
+            UserId = userId,
+            ClaimType = $"{functionName}.Permissions",
+            ClaimValue = originalPermission.ToString()
+        };
+        
+        _context.UserClaims.Add(userClaim);
+        await _context.SaveChangesAsync();
+
+        // 第一次調用建立快取
+        var result1 = await _permissionProvider.GetUserPermissionAsync(userId, functionName);
+        Assert.Equal(originalPermission, result1);
+
+        // 更新權限
+        userClaim.ClaimValue = updatedPermission.ToString();
+        await _context.SaveChangesAsync();
+
+        // 清除快取
+        await _permissionProvider.InvalidateUserPermissionCacheAsync(userId);
+
+        // 再次調用應該取得更新後的值
+        var result2 = await _permissionProvider.GetUserPermissionAsync(userId, functionName);
+
+        // Assert
+        Assert.Equal(updatedPermission, result2);
+    }
+
+    public void Dispose()
+    {
+        _context?.Dispose();
+        _cache?.Dispose();
+    }
+}

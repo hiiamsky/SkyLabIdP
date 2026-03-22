@@ -1,0 +1,29 @@
+# 1️⃣ 使用官方 .NET 8 ASP.NET Runtime 作為基礎映像
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+
+# 2️⃣ 設定工作目錄
+WORKDIR /app
+
+# 3️⃣ 安裝 SkiaSharp 依賴
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libfontconfig1 \
+    libfreetype6 \
+    libgl1-mesa-glx \
+    libjpeg62-turbo \
+    libpng16-16 \
+    libgif7 && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
+
+# 4️⃣ 建立非 root 使用者
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+
+# 5️⃣ 設定適當的權限
+RUN chown -R appuser:appgroup /app
+
+# 6️⃣ 切換至非 root 用戶
+USER appuser
+
+# 7️⃣ 預設 ENTRYPOINT（將在應用映像中覆蓋）
+ENTRYPOINT ["dotnet"]
