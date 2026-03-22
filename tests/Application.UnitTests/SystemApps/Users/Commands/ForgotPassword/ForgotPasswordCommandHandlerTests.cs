@@ -34,7 +34,8 @@ namespace Application.UnitTests.SystemApps.Users.Commands.ForgotPassword
             _loggerMock = new Mock<ILogger<ForgotPasswordCommandHandler>>();
 
             // URL validator 預設允許所有 URL
-            _urlValidatorMock.Setup(x => x.IsUrlAllowed(It.IsAny<string>())).Returns(true);
+            _urlValidatorMock.Setup(x => x.ValidateUrl(It.IsAny<string>()))
+                .Returns((true, (string?)null));
 
             // 設定預設配置
             var configSection = new Mock<IConfigurationSection>();
