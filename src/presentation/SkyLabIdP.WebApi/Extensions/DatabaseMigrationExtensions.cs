@@ -3,7 +3,9 @@ using DbUp.Engine;
 using Serilog;
 
 namespace SkyLabIdP.WebApi.Extensions;
-
+/// <summary>
+/// 提供資料庫遷移相關的擴充方法，使用 DbUp 執行 SQL 腳本來管理資料庫版本
+/// </summary>
 public static class DatabaseMigrationExtensions
 {
     /// <summary>

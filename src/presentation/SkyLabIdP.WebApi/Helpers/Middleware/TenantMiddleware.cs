@@ -21,11 +21,8 @@ public class TenantMiddleware
         _logger = logger;
     }
     /// <summary>
-    /// Invokes the middleware to extract tenant information from the request header and store it in HttpContext.Items.
+    /// InvokeAsync method to process the incoming HTTP request, extract tenant information, and handle bypass paths for specific endpoints.
     /// </summary>
-    /// <param name="context"></param>
-    /// <returns></returns>
-    // Google OAuth 重定向流程是瀏覽器行為，無法帶自訂 Header，必須排除
     private static readonly string[] _bypassPaths =
     [
         "/skylabidp/api/v1/ExternalAuth/login",
