@@ -14,8 +14,12 @@ namespace SkyLabIdP.WebApi.Helpers.Middleware;
     {
         private readonly HttpRequest _request;
         private readonly RecyclableMemoryStreamManager _streamManager = new RecyclableMemoryStreamManager();
-        private string _body;
+        private string? _body;
 
+        /// <summary>
+        /// 初始化 HttpRequestWrapper，啟用請求體緩衝以支援多次讀取
+        /// </summary>
+        /// <param name="request">HTTP 請求</param>
         public HttpRequestWrapper(HttpRequest request)
         {
             _request = request;
@@ -26,12 +30,16 @@ namespace SkyLabIdP.WebApi.Helpers.Middleware;
         private void EnableBuffering()
         {
             // 只有當請求體存在且未啟用緩衝時才啟用
-            if (_request.Body.CanSeek == false)
+            if (!_request.Body.CanSeek)
             {
                 _request.EnableBuffering();
             }
         }
 
+        /// <summary>
+        /// 非同步讀取請求體內容
+        /// </summary>
+        /// <returns>請求體字串</returns>
         public async Task<string> GetBodyAsync()
         {
             if (_body != null)
@@ -56,11 +64,10 @@ namespace SkyLabIdP.WebApi.Helpers.Middleware;
     /// </summary>
     public class HttpResponseWrapper
     {
-        private readonly HttpResponse _response;
         private readonly RecyclableMemoryStreamManager _streamManager = new RecyclableMemoryStreamManager();
         private readonly Stream _originalBody;
         private readonly MemoryStream _bodyStream;
-        private string _body;
+        private string? _body;
         /// <summary>
         /// HttpResponseWrapper
         /// 用於攔截和讀取HttpResponse的內容
@@ -68,14 +75,17 @@ namespace SkyLabIdP.WebApi.Helpers.Middleware;
         /// <param name="response"></param>
         public HttpResponseWrapper(HttpResponse response)
         {
-            _response = response;
-            _originalBody = _response.Body;
+            _originalBody = response.Body;
             
             // 攔截響應流以便我們可以讀取
             _bodyStream = _streamManager.GetStream();
-            _response.Body = _bodyStream;
+            response.Body = _bodyStream;
         }
 
+        /// <summary>
+        /// 非同步讀取響應體內容
+        /// </summary>
+        /// <returns>響應體字串</returns>
         public async Task<string> GetBodyAsync()
         {
             if (_body != null)
@@ -93,6 +103,9 @@ namespace SkyLabIdP.WebApi.Helpers.Middleware;
             return _body;
         }
 
+        /// <summary>
+        /// 將攔截的響應體複製回原始輸出流
+        /// </summary>
         public async Task CopyBodyToOriginalStreamAsync()
         {
             _bodyStream.Position = 0;

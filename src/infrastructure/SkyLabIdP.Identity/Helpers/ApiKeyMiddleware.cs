@@ -38,8 +38,8 @@ namespace SkyLabIdP.Identity.Helpers
                 context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
                 return;
             }
-            string userApiKey = context.Request.Headers["X-Api-Key"];
-            if (!_apiKeyValidation.IsValidApiKey(userApiKey!))
+            string userApiKey = context.Request.Headers["X-Api-Key"].ToString();
+            if (!_apiKeyValidation.IsValidApiKey(userApiKey))
             {
                 context.Response.StatusCode = (int)HttpStatusCode.Unauthorized;
                 return;

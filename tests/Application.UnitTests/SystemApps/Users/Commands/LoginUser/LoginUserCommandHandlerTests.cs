@@ -3,26 +3,20 @@ using SkyLabIdP.Application.Dtos;
 using SkyLabIdP.Application.Dtos.User.Authentication;
 using SkyLabIdP.Application.SystemApps.Users.Commands.LoginUser;
 using SkyLabIdP.Application.SystemApps.Users.Commands.LoginUser.Services;
-using SkyLabIdP.Domain.Entities;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Identity;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Application.UnitTests.SystemApps.Users.Commands.LoginUser
 {
-    public class LoginUserCommandHandlerTests : IDisposable
+    public class LoginUserCommandHandlerTests
     {
         private readonly Mock<ITenantUserServiceFactory> _loginServiceFactoryMock;
-        private readonly Mock<ILogger<LoginUserCommandHandler>> _loggerMock;
         private readonly Mock<IUserService> _loginServiceMock;
         private readonly LoginUserCommandHandler _handler;
 
         public LoginUserCommandHandlerTests()
         {
             _loginServiceFactoryMock = new Mock<ITenantUserServiceFactory>();
-            _loggerMock = new Mock<ILogger<LoginUserCommandHandler>>();
             _loginServiceMock = new Mock<IUserService>();
 
             // Setup factory to return our mock login service
@@ -30,42 +24,7 @@ namespace Application.UnitTests.SystemApps.Users.Commands.LoginUser
                 .Setup(f => f.GetServiceByTenantId(It.IsAny<string>()))
                 .Returns(_loginServiceMock.Object);
 
-            _handler = new LoginUserCommandHandler(_loginServiceFactoryMock.Object, _loggerMock.Object);
-        }
-
-        public void Dispose()
-        {
-            // Clean up resources if needed
-        }
-
-        // MockUserManager helper method from UserDetailWriterIntegrationTests.cs
-        private static Mock<UserManager<TUser>> MockUserManager<TUser>() where TUser : class
-        {
-            var store = new Mock<IUserStore<TUser>>();
-            var options = new Mock<IOptions<IdentityOptions>>();
-            var idOptions = new IdentityOptions();
-            options.Setup(o => o.Value).Returns(idOptions);
-            
-            var userValidators = new List<IUserValidator<TUser>>();
-            var validator = new Mock<IUserValidator<TUser>>();
-            userValidators.Add(validator.Object);
-            
-            var pwdValidators = new List<IPasswordValidator<TUser>>();
-            var pwdValidator = new Mock<IPasswordValidator<TUser>>();
-            pwdValidators.Add(pwdValidator.Object);
-
-            var userManager = new Mock<UserManager<TUser>>(
-                store.Object,
-                options.Object,
-                new Mock<IPasswordHasher<TUser>>().Object,
-                userValidators,
-                pwdValidators,
-                new Mock<ILookupNormalizer>().Object,
-                new Mock<IdentityErrorDescriber>().Object,
-                new Mock<IServiceProvider>().Object,
-                new Mock<ILogger<UserManager<TUser>>>().Object);
-            
-            return userManager;
+            _handler = new LoginUserCommandHandler(_loginServiceFactoryMock.Object);
         }
 
         [Fact]

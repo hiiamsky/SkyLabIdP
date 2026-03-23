@@ -8,7 +8,7 @@ namespace SkyLabIdP.Domain.Entities
         [Key]
         [Required]
         [MaxLength(450)]
-        public string GroupID { get; set; }
+        public string GroupID { get; set; } = string.Empty;
 
         [Required]
         [MaxLength(100)]
@@ -40,7 +40,7 @@ namespace SkyLabIdP.Domain.Entities
         [Required]
         public int GroupOrder { get; set; }
 
-        public ICollection<Function> Functions { get; set; }
+        public ICollection<Function> Functions { get; set; } = [];
 
     }
 }

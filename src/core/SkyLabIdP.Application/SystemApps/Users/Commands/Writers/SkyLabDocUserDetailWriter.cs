@@ -24,12 +24,12 @@ public class SkyLabDocUserDetailWriter : BaseUserDetailWriter<SkyLabMgmUserRegis
         return new SkyLabDocUserDetail
         {
             FileId = request.FileId,
-            UserName = user.UserName,
+            UserName = user.UserName ?? string.Empty,
             FullName = request.FullName,
             BranchCode = request.BranchCode,
             SubordinateUnit = request.SubordinateUnit,
             JobTitle = request.JobTitle,
-            OfficialEmail = user.Email,
+            OfficialEmail = user.Email ?? string.Empty,
             OfficialPhone = request.OfficialPhone,
             UserId = user.Id,
             CreateBy = user.Id,

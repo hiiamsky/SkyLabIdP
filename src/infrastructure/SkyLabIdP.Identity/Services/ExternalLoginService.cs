@@ -17,37 +17,24 @@ using Microsoft.Extensions.Logging;
 
 namespace SkyLabIdP.Identity.Services
 {
-    public class ExternalLoginService : IExternalLoginHandler
+    public class ExternalLoginService(
+        UserManager<ApplicationUser> userManager,
+        IApplicationDbContext context,
+        IJwtService jwtService,
+        ITenantUserServiceFactory tenantUserServiceFactory,
+        IDataProtectionService dataprotectionservice,
+        ILoginNotificationService loginNotificationService,
+        ITokenStorageService tokenStorageService,
+        ILogger<ExternalLoginService> logger) : IExternalLoginHandler
     {
-        private readonly UserManager<ApplicationUser> _userManager;
-        private readonly IApplicationDbContext _context;
-        private readonly IJwtService _jwtService;
-        private readonly IUserService _userService;
-        private readonly IDataProtectionService _dataprotectionservice ;
-        private readonly ILoginNotificationService _loginNotificationService;
-        private readonly ITokenStorageService _tokenStorageService;
-        private readonly ILogger<ExternalLoginService> _logger;
-
-        public ExternalLoginService(
-            UserManager<ApplicationUser> userManager,
-            IApplicationDbContext context,
-            IJwtService jwtService,
-            IUserService userService,
-            IDataProtectionService dataprotectionservice ,
-            ILoginNotificationService loginNotificationService,
-            ITokenStorageService tokenStorageService,
-            IConfiguration configuration,
-            ILogger<ExternalLoginService> logger)
-        {
-            _userManager = userManager;
-            _context = context;
-            _jwtService = jwtService;
-            _userService = userService;
-            _dataprotectionservice  = dataprotectionservice;
-            _loginNotificationService = loginNotificationService;
-            _tokenStorageService = tokenStorageService;
-            _logger = logger;
-        }
+        private readonly UserManager<ApplicationUser> _userManager = userManager;
+        private readonly IApplicationDbContext _context = context;
+        private readonly IJwtService _jwtService = jwtService;
+        private readonly ITenantUserServiceFactory _tenantUserServiceFactory = tenantUserServiceFactory;
+        private readonly IDataProtectionService _dataprotectionservice = dataprotectionservice;
+        private readonly ILoginNotificationService _loginNotificationService = loginNotificationService;
+        private readonly ITokenStorageService _tokenStorageService = tokenStorageService;
+        private readonly ILogger<ExternalLoginService> _logger = logger;
 
         public async Task<AuthenticateResponse> HandleExternalLoginAsync(
             string externalUserId,
@@ -59,6 +46,7 @@ namespace SkyLabIdP.Identity.Services
         {
             try
             {
+                var userService = _tenantUserServiceFactory.GetServiceByTenantId(tenantId);
                 await _context.BeginTransactionAsync(); // 開始交易
 
                 // 尋找是否已有此外部帳號
@@ -130,7 +118,7 @@ namespace SkyLabIdP.Identity.Services
                         }
                         _logger.LogInformation("已建立新外部登入用戶: {UserName}, Email: {Email}", username, email);
                         // 建立基本的用戶詳情
-                        await _userService.CreateExternalUserDetailAsync(
+                        await userService.CreateExternalUserDetailAsync(
                             user.Id,
                             username,
                             name,
@@ -160,7 +148,7 @@ namespace SkyLabIdP.Identity.Services
                 }
 
                 // 獲取用戶資訊
-                var userInfo = await _userService.GetLoginUserInfoAsync(user.Id, CancellationToken.None);
+                var userInfo = await userService.GetLoginUserInfoAsync(user.Id, CancellationToken.None);
 
                 var response = new AuthenticateResponse(
                     userInfo,
@@ -214,10 +202,11 @@ namespace SkyLabIdP.Identity.Services
         {
             try
             {
+                var userService = _tenantUserServiceFactory.GetServiceByTenantId(userDetails.TenantId);
                 await _context.BeginTransactionAsync(); // 開始交易
 
                 // 使用 IUserService 的新方法，將租戶判斷委託給具體的服務實現
-                var result = await _userService.UpdateExternalUserRegistrationAsync(
+                var result = await userService.UpdateExternalUserRegistrationAsync(
                     userId,
                     userDetails,
                     CancellationToken.None);

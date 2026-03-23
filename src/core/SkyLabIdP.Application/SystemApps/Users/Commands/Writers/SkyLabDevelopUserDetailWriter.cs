@@ -28,7 +28,7 @@ public class SkyLabDevelopUserDetailWriter :
             BranchCode = request.BranchCode,
             SubordinateUnit = request.SubordinateUnit,
             JobTitle = request.JobTitle,
-            OfficialEmail = user.Email,
+            OfficialEmail = user.Email ?? string.Empty,
             OfficialPhone = request.OfficialPhone,
             UserId = user.Id,
             CreateBy = user.Id,
