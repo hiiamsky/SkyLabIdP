@@ -24,6 +24,7 @@ public sealed class UnitOfWork : IUnitOfWork
     private IAuditLogRepository? _auditLogs;
     private IBranchRepository? _branches;
     private IFunctionGroupRepository? _functionGroups;
+    private IFunctionRepository? _functions;
     private IFileUploadRepository? _fileUploads;
     private ISysCodeRepository? _sysCodes;
     private IBranchAreaRepository? _branchAreas;
@@ -139,6 +140,21 @@ public sealed class UnitOfWork : IUnitOfWork
                 }
             }
             return _functionGroups;
+        }
+    }
+
+    public IFunctionRepository Functions
+    {
+        get
+        {
+            if (_functions == null)
+            {
+                lock (_repositoryLock)
+                {
+                    _functions ??= new FunctionRepository(GetOpenConnection(), _transaction);
+                }
+            }
+            return _functions;
         }
     }
 
@@ -321,6 +337,7 @@ public sealed class UnitOfWork : IUnitOfWork
             _auditLogs = null;
             _branches = null;
             _functionGroups = null;
+            _functions = null;
             _fileUploads = null;
             _sysCodes = null;
             _branchAreas = null;

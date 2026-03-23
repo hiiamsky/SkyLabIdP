@@ -272,32 +272,31 @@ public abstract class AbstractLoginUserInfoService : IUserService
 
         _logger.LogDebug("快取中沒有資料，從資料庫查詢，UserId: {UserId}, TenantId: {TenantId}", loginUserId, _currentTenantId);
 
-        // 獲取用戶資訊
-        var userInfo = await GetTenantUserInfoAsync(loginUserId);
+        // 先查詢 ApplicationUser，後續可重用
+        var user = await _userManager.FindByIdAsync(loginUserId);
+        if (user == null)
+        {
+            _logger.LogWarning("找不到 ApplicationUser，UserId: {UserId}", loginUserId);
+            return GetEmptyloginUserInfoDto(loginUserId);
+        }
+
+        // 獲取用戶資訊（子類只查 UserDetail 表，不再 JOIN AspNetUsers）
+        var userInfo = await GetTenantUserInfoAsync(loginUserId, user);
 
         if (userInfo.IsUserEligible)
         {
             _logger.LogDebug("使用者符合資格，開始處理權限和功能群組，UserId: {UserId}", loginUserId);
-            
-            // Get user's claims and function groups
-            var user = await _userManager.FindByIdAsync(userInfo.UserId);
-            if (user != null)
-            {
-                var claimsDictionary = await GetUserClaimsDictionaryAsync(user);
-                var functionGroupDtos = await GetFunctionGroupsAsync(cancellationToken);
 
-                // Process the function permissions based on claims
-                ProcessFunctionPermissions(functionGroupDtos, claimsDictionary);
+            var claimsDictionary = await GetUserClaimsDictionaryAsync(user);
+            var functionGroupDtos = await GetFunctionGroupsAsync(cancellationToken);
 
-                // Add function group DTOs or permissions info to userInfo if needed
-                userInfo.FunctionGroups = functionGroupDtos;
+            // Process the function permissions based on claims
+            ProcessFunctionPermissions(functionGroupDtos, claimsDictionary);
+
+            // Add function group DTOs or permissions info to userInfo if needed
+            userInfo.FunctionGroups = functionGroupDtos;
                 
-                _logger.LogDebug("成功處理使用者權限和功能群組，UserId: {UserId}", loginUserId);
-            }
-            else
-            {
-                _logger.LogWarning("找不到 ApplicationUser，UserId: {UserId}", loginUserId);
-            }
+            _logger.LogDebug("成功處理使用者權限和功能群組，UserId: {UserId}", loginUserId);
         }
         else
         {
@@ -325,8 +324,8 @@ public abstract class AbstractLoginUserInfoService : IUserService
 
         return userInfo;
     }
-    // 子類必須實現此方法來提供特定租戶的使用者資訊
-    protected abstract Task<LoginUserInfoDto> GetTenantUserInfoAsync(string loginUserId);
+    // 子類必須實現此方法來提供特定租戶的使用者資訊（只查 UserDetail 表，AspNetUsers 資料由 ApplicationUser 提供）
+    protected abstract Task<LoginUserInfoDto> GetTenantUserInfoAsync(string loginUserId, ApplicationUser user);
 
 
 
@@ -1652,7 +1651,25 @@ ipAddress: ipAddress ?? UnknownValue,
                 request.UserId = _dataProtectionService.Unprotect(request.UserId);
             }
 
-            var (items, totalCount) = await _unitOfWork.SkyLabDocUserDetails.GetAccountQueryAsync(request, cancellationToken);
+            // Status filter: 先用 UserManager 查符合狀態條件的 userIds
+            IEnumerable<string>? statusFilteredUserIds = null;
+            if (request.Status != 0)
+            {
+                var usersQuery = _userManager.Users.AsQueryable();
+                usersQuery = request.Status switch
+                {
+                    (int)UserInfo.StatusUnApprove => usersQuery.Where(u => !u.IsApproved),
+                    (int)UserInfo.StatusIsActive => usersQuery.Where(u => u.IsActive),
+                    (int)UserInfo.StatusLockoutEnabled => usersQuery.Where(u => u.LockoutEnabled),
+                    (int)UserInfo.StatusUnActive => usersQuery.Where(u => !u.IsActive && u.IsApproved),
+                    (int)UserInfo.StatusIsApproved => usersQuery.Where(u => u.IsApproved),
+                    _ => usersQuery
+                };
+                statusFilteredUserIds = usersQuery.Select(u => u.Id).ToList();
+            }
+
+            var (items, totalCount) = await _unitOfWork.SkyLabDocUserDetails
+                .GetAccountQueryAsync(request, statusFilteredUserIds, cancellationToken);
             var itemList = items.ToList();
 
             // 若無記錄
@@ -1683,9 +1700,38 @@ ipAddress: ipAddress ?? UnknownValue,
                 };
             }
 
-            // 加密敏感欄位
+            // 批次查詢 Branch、FileUpload、User 狀態資料
+            var branchCodes = itemList.Select(i => i.BranchCode).Where(c => !string.IsNullOrEmpty(c)).Distinct();
+            var fileIds = itemList.Select(i => i.FileId).Where(f => !string.IsNullOrEmpty(f)).Distinct();
+            var userIds = itemList.Select(i => i.UserId).Distinct().ToList();
+
+            var branches = (await _unitOfWork.Branches.GetByCodesAsync(branchCodes, cancellationToken))
+                .ToDictionary(b => b.BranchCode);
+            var files = (await _unitOfWork.FileUploads.GetByIdsAsync(fileIds, cancellationToken))
+                .ToDictionary(f => f.FileId);
+            var appUsers = _userManager.Users
+                .Where(u => userIds.Contains(u.Id))
+                .ToDictionary(u => u.Id);
+
+            // LINQ 組合最終 DTO + 加密敏感欄位
             foreach (var dto in itemList)
             {
+                if (branches.TryGetValue(dto.BranchCode, out var branch))
+                    dto.BranchName = branch.BranchName;
+
+                if (files.TryGetValue(dto.FileId, out var file))
+                {
+                    dto.OriginalFileName = file.OriginalFileName;
+                    dto.FileExtension = file.FileExtension;
+                }
+
+                if (appUsers.TryGetValue(dto.UserId, out var appUser))
+                {
+                    dto.IsApproved = appUser.IsApproved;
+                    dto.IsActive = appUser.IsActive;
+                    dto.LockoutEnabled = appUser.LockoutEnabled;
+                }
+
                 dto.FileId = _dataProtectionService.Protect(dto.FileId);
                 dto.UserId = _dataProtectionService.Protect(dto.UserId);
                 dto.SystemRole = _dataProtectionService.Protect(dto.SystemRole);
@@ -1823,21 +1869,28 @@ ipAddress: ipAddress ?? UnknownValue,
     /// <returns></returns>
     protected virtual async Task<List<FunctionGroupDto>> GetFunctionGroupsAsync(CancellationToken cancellationToken)
     {
-        var groups = await _unitOfWork.FunctionGroups.GetAllWithFunctionsAsync(cancellationToken);
+        var groups = (await _unitOfWork.FunctionGroups.GetAllAsync(cancellationToken)).ToList();
+        var groupIds = groups.Select(g => g.GroupID);
+        var functions = (await _unitOfWork.Functions.GetByGroupIdsAsync(groupIds, cancellationToken))
+            .GroupBy(f => f.GroupID)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
         return groups.Select(fg => new FunctionGroupDto
         {
             GroupID = fg.GroupID,
             GroupEnglishDescription = fg.GroupEnglishDescription,
             GroupChineseDescription = fg.GroupChineseDescription,
             GroupOrder = fg.GroupOrder,
-            Functions = fg.Functions.Select(f => new FunctionDto
-            {
-                GroupID = f.GroupID,
-                FunctionID = f.FunctionID,
-                FunctionEnglishDescription = f.FunctionEnglishDescription,
-                FunctionChineseDescription = f.FunctionChineseDescription,
-                FunctionOrder = f.FunctionOrder
-            }).ToList()
+            Functions = functions.TryGetValue(fg.GroupID, out var fns)
+                ? fns.Select(f => new FunctionDto
+                {
+                    GroupID = f.GroupID,
+                    FunctionID = f.FunctionID,
+                    FunctionEnglishDescription = f.FunctionEnglishDescription,
+                    FunctionChineseDescription = f.FunctionChineseDescription,
+                    FunctionOrder = f.FunctionOrder
+                }).ToList()
+                : []
         }).ToList();
     }
     /// <summary>

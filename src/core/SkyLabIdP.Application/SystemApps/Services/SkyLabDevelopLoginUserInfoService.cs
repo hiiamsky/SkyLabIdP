@@ -9,14 +9,26 @@ namespace SkyLabIdP.Application.SystemApps.Services;
 
 public class SkyLabDevelopLoginUserInfoService(LoginUserInfoServiceSettings loginUserInfoServiceSettings) : AbstractLoginUserInfoService(loginUserInfoServiceSettings)
 {
-    protected override async Task<LoginUserInfoDto> GetTenantUserInfoAsync(string loginUserId)
+    protected override async Task<LoginUserInfoDto> GetTenantUserInfoAsync(string loginUserId, ApplicationUser user)
     {
         if (string.IsNullOrEmpty(loginUserId))
         {
             return new LoginUserInfoDto();
         }
 
-        return await _unitOfWork.SkyLabDevelopUserDetails.GetTenantUserInfoAsync(loginUserId);
+        var detail = await _unitOfWork.SkyLabDevelopUserDetails.GetByUserIdAsync(loginUserId);
+
+        return new LoginUserInfoDto
+        {
+            UserId = user.Id,
+            IsActive = user.IsActive,
+            IsApproved = user.IsApproved,
+            LockoutEnabled = user.LockoutEnabled,
+            IsUserEligible = user.IsActive && !user.LockoutEnabled,
+            BranchCode = detail?.BranchCode ?? "",
+            RegionCode = detail?.RegionCode ?? "",
+            OfficialEmail = detail?.OfficialEmail ?? ""
+        };
     }
 
     protected override async Task<object> GetUserDetailAsync(string userId, CancellationToken cancellationToken)

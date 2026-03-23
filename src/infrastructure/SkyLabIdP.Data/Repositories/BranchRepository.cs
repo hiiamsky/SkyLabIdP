@@ -30,6 +30,17 @@ public class BranchRepository : IBranchRepository
             _transaction);
     }
 
+    public async Task<IEnumerable<Branch>> GetByCodesAsync(IEnumerable<string> codes, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT BranchCode, BranchName, RegionCode
+            FROM [Branch]
+            WHERE BranchCode IN @Codes
+            """;
+
+        return await _connection.QueryAsync<Branch>(sql, new { Codes = codes }, _transaction);
+    }
+
     public async Task<IEnumerable<Branch>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         const string sql = "SELECT BranchCode, BranchName, RegionCode FROM [Branch] ORDER BY BranchCode";
