@@ -62,7 +62,19 @@ namespace SkyLabIdP.Application
                 Cache = provider.GetRequiredService<IDistributedCache>(),
                 TokenStorageService = provider.GetRequiredService<ITokenStorageService>()
             });
-            
+
+            services.AddScoped<ExternalLoginServiceSettings>(provider => new ExternalLoginServiceSettings
+            {
+                UserManager = provider.GetRequiredService<UserManager<ApplicationUser>>(),
+                Context = provider.GetRequiredService<IApplicationDbContext>(),
+                JwtService = provider.GetRequiredService<IJwtService>(),
+                TenantUserServiceFactory = provider.GetRequiredService<ITenantUserServiceFactory>(),
+                DataProtectionService = provider.GetRequiredService<IDataProtectionService>(),
+                LoginNotificationService = provider.GetRequiredService<ILoginNotificationService>(),
+                TokenStorageService = provider.GetRequiredService<ITokenStorageService>(),
+                Logger = provider.GetRequiredService<ILogger<ExternalLoginServiceSettings>>()
+            });
+
             // 註冊 ITenantUserServiceFactory
             services.AddScoped<ITenantUserServiceFactory, TenantUserServiceFactory>();
 
