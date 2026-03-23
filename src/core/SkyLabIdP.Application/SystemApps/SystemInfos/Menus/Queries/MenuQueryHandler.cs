@@ -37,9 +37,39 @@ namespace SkyLabIdP.Application.SystemApps.SystemInfos.Menus.Queries
                     };
                 }
 
+                // 分別查詢 FunctionGroup 和 Function
                 var functionGroups = (await _unitOfWork.FunctionGroups
-                    .GetFilteredWithFunctionsAsync(request.GroupID, request.FunctionID, cancellationToken))
+                    .GetFilteredAsync(request.GroupID, cancellationToken))
                     .ToList();
+
+                var groupIds = functionGroups.Select(g => g.GroupID);
+                var functions = (await _unitOfWork.Functions.GetByGroupIdsAsync(groupIds, cancellationToken)).ToList();
+
+                // 若有指定 FunctionID，過濾 functions
+                if (!string.IsNullOrEmpty(request.FunctionID))
+                {
+                    functions = functions.Where(f => f.FunctionID == request.FunctionID).ToList();
+                }
+
+                // 只保留 IsDisplayInMenu 的 functions，並按 GroupID 分組
+                var functionsByGroup = functions
+                    .Where(f => f.IsDisplayInMenu)
+                    .GroupBy(f => f.GroupID)
+                    .ToDictionary(g => g.Key, g => g.OrderBy(f => f.FunctionOrder).ToList());
+
+                // 組裝 Functions 到對應的 FunctionGroup
+                foreach (var group in functionGroups)
+                {
+                    group.Functions = functionsByGroup.TryGetValue(group.GroupID, out var fns)
+                        ? fns
+                        : [];
+                }
+
+                // 若有指定 FunctionID，只回傳包含該 Function 的 Groups
+                if (!string.IsNullOrEmpty(request.FunctionID))
+                {
+                    functionGroups = functionGroups.Where(g => g.Functions.Count > 0).ToList();
+                }
 
                 // Map to DTOs
                 var functionGroupDtos = _mapper.FunctionGroupListToDtoList(functionGroups);

@@ -16,59 +16,28 @@ public class FunctionGroupRepository : IFunctionGroupRepository
         _transaction = transaction;
     }
 
-    public async Task<IEnumerable<FunctionGroup>> GetAllWithFunctionsAsync(CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<FunctionGroup>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         const string sql = """
-            SELECT fg.GroupID, fg.GroupIcon, fg.GroupTitle, fg.GroupEnglishDescription,
-                   fg.GroupChineseDescription, fg.TargetRoute, fg.IsDisabled, fg.IsOpenFunctionList, fg.GroupOrder,
-                   f.GroupID, f.FunctionID, f.FunctionIcon, f.FunctionEnglishDescription,
-                   f.FunctionChineseDescription, f.TargetRoute, f.IsDisabled, f.IsDisplayInMenu, f.FunctionOrder
-            FROM [FunctionGroup] fg
-            LEFT JOIN [Function] f ON f.GroupID = fg.GroupID
-            WHERE fg.IsDisabled = 0
-            ORDER BY fg.GroupOrder, f.FunctionOrder
+            SELECT GroupID, GroupIcon, GroupTitle, GroupEnglishDescription,
+                   GroupChineseDescription, TargetRoute, IsDisabled, IsOpenFunctionList, GroupOrder
+            FROM [FunctionGroup]
+            WHERE IsDisabled = 0
+            ORDER BY GroupOrder
             """;
 
-        var groupDict = new Dictionary<string, FunctionGroup>();
-
-        await _connection.QueryAsync<FunctionGroup, Function, FunctionGroup>(
-            sql,
-            (group, function) =>
-            {
-                if (!groupDict.TryGetValue(group.GroupID, out var existingGroup))
-                {
-                    existingGroup = group;
-                    existingGroup.Functions = new List<Function>();
-                    groupDict[group.GroupID] = existingGroup;
-                }
-
-                if (function != null && !string.IsNullOrEmpty(function.FunctionID))
-                {
-                    ((List<Function>)existingGroup.Functions).Add(function);
-                }
-
-                return existingGroup;
-            },
-            transaction: _transaction,
-            splitOn: "GroupID");
-
-        return groupDict.Values;
+        return await _connection.QueryAsync<FunctionGroup>(sql, transaction: _transaction);
     }
 
-    public async Task<IEnumerable<FunctionGroup>> GetFilteredWithFunctionsAsync(string? groupId = null, string? functionId = null, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<FunctionGroup>> GetFilteredAsync(string? groupId = null, CancellationToken cancellationToken = default)
     {
         var whereClauses = new List<string>();
         var parameters = new DynamicParameters();
 
         if (!string.IsNullOrEmpty(groupId))
         {
-            whereClauses.Add("fg.GroupID = @GroupID");
+            whereClauses.Add("GroupID = @GroupID");
             parameters.Add("GroupID", groupId);
-        }
-        if (!string.IsNullOrEmpty(functionId))
-        {
-            whereClauses.Add("f.FunctionID = @FunctionID");
-            parameters.Add("FunctionID", functionId);
         }
 
         var whereClause = whereClauses.Count > 0
@@ -76,40 +45,13 @@ public class FunctionGroupRepository : IFunctionGroupRepository
             : "";
 
         var sql = $"""
-            SELECT fg.GroupID, fg.GroupIcon, fg.GroupTitle, fg.GroupEnglishDescription,
-                   fg.GroupChineseDescription, fg.TargetRoute, fg.IsDisabled, fg.IsOpenFunctionList, fg.GroupOrder,
-                   f.GroupID, f.FunctionID, f.FunctionIcon, f.FunctionEnglishDescription,
-                   f.FunctionChineseDescription, f.TargetRoute, f.IsDisabled, f.IsDisplayInMenu, f.FunctionOrder
-            FROM [FunctionGroup] fg
-            LEFT JOIN [Function] f ON f.GroupID = fg.GroupID
+            SELECT GroupID, GroupIcon, GroupTitle, GroupEnglishDescription,
+                   GroupChineseDescription, TargetRoute, IsDisabled, IsOpenFunctionList, GroupOrder
+            FROM [FunctionGroup]
             {whereClause}
-            ORDER BY fg.GroupOrder, f.FunctionOrder
+            ORDER BY GroupOrder
             """;
 
-        var groupDict = new Dictionary<string, FunctionGroup>();
-
-        await _connection.QueryAsync<FunctionGroup, Function, FunctionGroup>(
-            sql,
-            (group, function) =>
-            {
-                if (!groupDict.TryGetValue(group.GroupID, out var existingGroup))
-                {
-                    existingGroup = group;
-                    existingGroup.Functions = new List<Function>();
-                    groupDict[group.GroupID] = existingGroup;
-                }
-
-                if (function != null && !string.IsNullOrEmpty(function.FunctionID) && function.IsDisplayInMenu)
-                {
-                    ((List<Function>)existingGroup.Functions).Add(function);
-                }
-
-                return existingGroup;
-            },
-            param: parameters,
-            transaction: _transaction,
-            splitOn: "GroupID");
-
-        return groupDict.Values;
+        return await _connection.QueryAsync<FunctionGroup>(sql, parameters, _transaction);
     }
 }

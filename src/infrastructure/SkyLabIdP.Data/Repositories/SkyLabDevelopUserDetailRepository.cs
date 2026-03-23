@@ -1,7 +1,6 @@
 using System.Data;
 using Dapper;
 using SkyLabIdP.Application.Common.Interfaces.Repositories;
-using SkyLabIdP.Application.Dtos.LoginUserInfo;
 using SkyLabIdP.Domain.Entities;
 
 namespace SkyLabIdP.Data.Repositories;
@@ -32,36 +31,6 @@ public class SkyLabDevelopUserDetailRepository : ISkyLabDevelopUserDetailReposit
             sql,
             new { UserId = userId },
             _transaction);
-    }
-
-    public async Task<LoginUserInfoDto> GetTenantUserInfoAsync(string userId, CancellationToken cancellationToken = default)
-    {
-        const string sql = """
-            SELECT ud.UserId, au.IsActive, au.IsApproved, au.LockoutEnabled,
-                   ud.BranchCode, ud.RegionCode, ud.OfficialEmail
-            FROM [SkyLabDevelopUserDetail] ud
-            JOIN [AspNetUsers] au ON au.Id = ud.UserId
-            WHERE ud.UserId = @UserId
-            """;
-
-        var row = await _connection.QueryFirstOrDefaultAsync(
-            sql,
-            new { UserId = userId },
-            _transaction);
-
-        if (row == null) return new LoginUserInfoDto();
-
-        return new LoginUserInfoDto
-        {
-            UserId = row.UserId ?? "",
-            IsActive = row.IsActive,
-            IsApproved = row.IsApproved,
-            LockoutEnabled = row.LockoutEnabled,
-            IsUserEligible = (bool)row.IsActive && !(bool)row.LockoutEnabled,
-            BranchCode = row.BranchCode ?? "",
-            RegionCode = row.RegionCode ?? "",
-            OfficialEmail = row.OfficialEmail ?? ""
-        };
     }
 
     public async Task UpdateLastLoginTimeAsync(string userId, DateTime loginTime, CancellationToken cancellationToken = default)

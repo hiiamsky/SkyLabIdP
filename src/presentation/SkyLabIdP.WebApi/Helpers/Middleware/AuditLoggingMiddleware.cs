@@ -12,6 +12,9 @@ namespace SkyLabIdP.WebApi.Helpers.Middleware;
 /// </summary>
 public class AuditLoggingMiddleware
 {
+    private const string AnonymousUser = "Anonymous";
+    private const string UnknownIpAddress = "Unknown";
+
     private readonly RequestDelegate _next;
     private readonly ILogger<AuditLoggingMiddleware> _logger;
     private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -54,11 +57,6 @@ public class AuditLoggingMiddleware
         try
         {
             await _next(context);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "An unhandled exception occurred during request processing");
-            throw;
         }
         finally
         {
@@ -122,7 +120,16 @@ public class AuditLoggingMiddleware
                 ExecutionTime = stopwatch.ElapsedMilliseconds,
                 // 獲取真實 IP 位址，與 ApiController 中的邏輯保持一致
                 IPAddress = GetRealIpAddress(context),
-                UserAgent = context.Request.Headers.UserAgent
+                UserAgent = context.Request.Headers.UserAgent,
+                AdditionalInfo = new Dictionary<string, string>
+                {
+                    ["RequestContentType"] = requestContentType,
+                    ["ResponseContentType"] = responseContentType,
+                    ["IsSensitiveUrl"] = isSensitiveUrl.ToString(),
+                    ["IsBinaryContentPath"] = isBinaryContentPath.ToString(),
+                    ["Scheme"] = context.Request.Scheme,
+                    ["Host"] = context.Request.Host.Value ?? string.Empty
+                }
             };
 
             // 非同步記錄審計，不影響響應時間，使用範圍服務工廠建立新的範圍
@@ -133,7 +140,9 @@ public class AuditLoggingMiddleware
                 await auditLogService.LogAsync(auditLog);
             });
         }
-    }        /// <summary>
+    }
+
+    /// <summary>
     /// 獲取解密後的使用者 ID
     /// </summary>
     /// <param name="context">HTTP 上下文</param>
@@ -155,11 +164,11 @@ public class AuditLoggingMiddleware
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "解密使用者 ID 失敗");
-                    return "Anonymous";
+                    return AnonymousUser;
                 }
             }
         }
-        return "Anonymous";
+        return AnonymousUser;
     }
 
     /// <summary>
@@ -167,7 +176,7 @@ public class AuditLoggingMiddleware
     /// </summary>
     /// <param name="context">HTTP 上下文</param>
     /// <returns>真實的使用者 IP 位址</returns>
-    private string GetRealIpAddress(HttpContext context)
+    private static string GetRealIpAddress(HttpContext context)
     {
         // 首先檢查常見的代理標頭，這些通常由 API Gateway 和反向代理設置
 
@@ -197,6 +206,6 @@ public class AuditLoggingMiddleware
         }
 
         // 4. 最後才使用 RemoteIpAddress
-        return context.Connection.RemoteIpAddress?.ToString() ?? "Unknown";
+        return context.Connection.RemoteIpAddress?.ToString() ?? UnknownIpAddress;
     }
 }

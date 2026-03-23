@@ -31,6 +31,18 @@ public class FileUploadRepository : IFileUploadRepository
             _transaction);
     }
 
+    public async Task<IEnumerable<FileUpload>> GetByIdsAsync(IEnumerable<string> fileIds, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT SerialNo, FileId, OriginalFileName, FileExtension, FileSystemType,
+                   FileDescription, ApacheTikaContent, IsDisabled, Comments, CreatorId, CreatedTime
+            FROM [FileUploads]
+            WHERE FileId IN @FileIds
+            """;
+
+        return await _connection.QueryAsync<FileUpload>(sql, new { FileIds = fileIds }, _transaction);
+    }
+
     public async Task<bool> ExistsByFileIdAndSystemTypeAsync(string fileId, string fileSystemType, CancellationToken cancellationToken = default)
     {
         const string sql = """

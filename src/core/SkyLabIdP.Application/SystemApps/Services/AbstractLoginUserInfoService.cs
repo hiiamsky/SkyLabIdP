@@ -34,6 +34,10 @@ namespace SkyLabIdP.Application.SystemApps.Services;
 
 public abstract class AbstractLoginUserInfoService : IUserService
 {
+    private const string UnknownValue = "Unknown";
+    private const string InvalidCredentialsMessage = "帳號或密碼錯誤";
+    private const string UserNotExistsMessage = "使用者不存在";
+
     protected readonly IUnitOfWork _unitOfWork;
     protected readonly UserManager<ApplicationUser> _userManager;
     protected readonly IJwtService _jwtService;
@@ -53,7 +57,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
 
     private string _currentTenantId = string.Empty; // 當前請求的租戶ID
 
-    public AbstractLoginUserInfoService(LoginUserInfoServiceSettings loginUserInfoServiceSettings)
+    protected AbstractLoginUserInfoService(LoginUserInfoServiceSettings loginUserInfoServiceSettings)
     {
 
         _unitOfWork = loginUserInfoServiceSettings.UnitOfWork;
@@ -127,7 +131,6 @@ public abstract class AbstractLoginUserInfoService : IUserService
                     };
                 }
                 
-                _logger.LogDebug("正在查找使用者: {UserName}", request.UserName);
                 var user = await FindUserAsync(request.UserName);
                 if (user == null) 
                 {
@@ -135,68 +138,17 @@ public abstract class AbstractLoginUserInfoService : IUserService
                     return UserNotFoundResponse(request.UserName, ipAddress: request.IpAddress);
                 }
 
-                _logger.LogDebug("找到使用者，UserId: {UserId}", user.Id);
-
-                // 驗證租戶ID是否為必要且有效
-                if (string.IsNullOrEmpty(request.TenantId))
-                {
-                    _logger.LogWarning("使用者 {UserName} 登入時未指定租戶ID", request.UserName);
-                    return new AuthenticateResponse
-                    {
-                        OperationResult = new OperationResult(false, "必須指定租戶ID", StatusCodes.Status400BadRequest)
-                    };
-                }
-
-                // 驗證租戶ID是否為有效的枚舉值（不區分大小寫）
-                if (!Enum.TryParse<Tenants>(request.TenantId, ignoreCase: true, out _))
-                {
-                    _logger.LogWarning("使用者 {UserName} 使用無效的租戶ID {TenantId} 進行登入", request.UserName, request.TenantId);
-                    
-                    // 觸發失敗登入通知（非阻塞）
-                    TriggerLoginNotification(
-                        userName: request.UserName,
-                        officialEmail: null,
-                        ipAddress: request.IpAddress ?? "Unknown",
-                        isSuccess: false,
-                        failureReason: "無效的租戶ID");
-                    
-                    return new AuthenticateResponse
-                    {
-                        OperationResult = new OperationResult(false, "無效的租戶ID", StatusCodes.Status400BadRequest)
-                    };
-                }
-
-                // 驗證使用者是否屬於指定的租戶
-                _logger.LogDebug("驗證使用者 {UserId} 是否屬於租戶 {TenantId}", user.Id, request.TenantId);
-                var isValidTenant = await ValidateUserTenantAsync(user.Id, request.TenantId, cancellationToken);
-                if (!isValidTenant)
-                {
-                    _logger.LogWarning("使用者 {UserName} 嘗試使用不屬於的租戶 {TenantId} 進行登入", request.UserName, request.TenantId);
-                    
-                    // 觸發失敗登入通知（非阻塞）
-                    TriggerLoginNotification(
-                        userName: request.UserName,
-                        officialEmail: user.Email,
-                        ipAddress: request.IpAddress ?? "Unknown",
-                        isSuccess: false,
-                        failureReason: "使用者不屬於指定的租戶");
-                    
-                    return new AuthenticateResponse
-                    {
-                        OperationResult = new OperationResult(false, "使用者不屬於指定的租戶", StatusCodes.Status403Forbidden)
-                    };
-                }
+                // 驗證租戶
+                var tenantError = await ValidateTenantForLoginAsync(user, request, cancellationToken);
+                if (tenantError != null)
+                    return tenantError;
                 
                 _currentTenantId = request.TenantId;
-                _logger.LogDebug("設定當前租戶ID: {TenantId}", _currentTenantId);
-
-                _logger.LogDebug("清除使用者 {UserId} 的快取資料", user.Id);
                 await ReMoveLoginUserInfoByCacheAsync(user, cancellationToken);
                 
                 _logger.LogDebug("取得使用者 {UserId} 登入資訊", user.Id);
                 var loginUserInfo = await GetLoginUserInfoAsync(user.Id, cancellationToken);
                 
-                _logger.LogDebug("驗證使用者 {UserId} 狀態", user.Id);
                 if (await ValidateUserAsync(user, loginUserInfo, cancellationToken) is AuthenticateResponse errorResponse)
                 {
                     _logger.LogWarning("使用者 {UserId} 驗證失敗: {ErrorMessage}", user.Id, errorResponse.OperationResult?.Messages?.FirstOrDefault());
@@ -210,23 +162,71 @@ public abstract class AbstractLoginUserInfoService : IUserService
                     return passwordErrorResponse;
                 }
                 
-                _logger.LogDebug("創建使用者 {UserId} 成功登入回應", user.Id);
                 return await CreateSuccessResponseAsync(user, loginUserInfo, cancellationToken, 
                     userName: request.UserName, 
                     ipAddress: request.IpAddress);
             }
             catch (SqlException ex) when (ex.Number == 1205)
             {
-                _logger.LogWarning(ex, "SQL 死鎖偵測到，正在重試... 使用者: {UserName}", request.UserName);
-                throw; // This will trigger the retry
+                throw; // Retry policy already logs deadlock retries
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "處理登入請求時發生未預期的錯誤，使用者: {UserName}", request.UserName);
-                return await HandleExceptionAsync(ex, cancellationToken);
+                return await HandleExceptionAsync(ex);
             }
         });
     }
+
+    /// <summary>
+    /// 驗證登入請求的租戶有效性
+    /// </summary>
+    private async Task<AuthenticateResponse?> ValidateTenantForLoginAsync(
+        ApplicationUser user, LoginUserCommand request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(request.TenantId))
+        {
+            _logger.LogWarning("使用者 {UserName} 登入時未指定租戶ID", request.UserName);
+            return new AuthenticateResponse
+            {
+                OperationResult = new OperationResult(false, "必須指定租戶ID", StatusCodes.Status400BadRequest)
+            };
+        }
+
+        if (!Enum.TryParse<Tenants>(request.TenantId, ignoreCase: true, out _))
+        {
+            _logger.LogWarning("使用者 {UserName} 使用無效的租戶ID {TenantId} 進行登入", request.UserName, request.TenantId);
+            TriggerLoginNotification(
+                userName: request.UserName,
+                officialEmail: null,
+                ipAddress: request.IpAddress ?? UnknownValue,
+                isSuccess: false,
+                failureReason: "無效的租戶ID");
+            return new AuthenticateResponse
+            {
+                OperationResult = new OperationResult(false, "無效的租戶ID", StatusCodes.Status400BadRequest)
+            };
+        }
+
+        var isValidTenant = await ValidateUserTenantAsync(user.Id, request.TenantId, cancellationToken);
+        if (!isValidTenant)
+        {
+            _logger.LogWarning("使用者 {UserName} 嘗試使用不屬於的租戶 {TenantId} 進行登入", request.UserName, request.TenantId);
+            TriggerLoginNotification(
+                userName: request.UserName,
+                officialEmail: user.Email,
+                ipAddress: request.IpAddress ?? UnknownValue,
+                isSuccess: false,
+                failureReason: "使用者不屬於指定的租戶");
+            return new AuthenticateResponse
+            {
+                OperationResult = new OperationResult(false, "使用者不屬於指定的租戶", StatusCodes.Status403Forbidden)
+            };
+        }
+
+        return null;
+    }
+
     // 定義快取鍵，包含租戶ID以區分不同租戶的快取
     private static string LoginUserInfoCacheKey(string tenantId, string loginUserId)
     {
@@ -272,32 +272,31 @@ public abstract class AbstractLoginUserInfoService : IUserService
 
         _logger.LogDebug("快取中沒有資料，從資料庫查詢，UserId: {UserId}, TenantId: {TenantId}", loginUserId, _currentTenantId);
 
-        // 獲取用戶資訊
-        var userInfo = await GetTenantUserInfoAsync(loginUserId);
+        // 先查詢 ApplicationUser，後續可重用
+        var user = await _userManager.FindByIdAsync(loginUserId);
+        if (user == null)
+        {
+            _logger.LogWarning("找不到 ApplicationUser，UserId: {UserId}", loginUserId);
+            return GetEmptyloginUserInfoDto(loginUserId);
+        }
+
+        // 獲取用戶資訊（子類只查 UserDetail 表，不再 JOIN AspNetUsers）
+        var userInfo = await GetTenantUserInfoAsync(loginUserId, user);
 
         if (userInfo.IsUserEligible)
         {
             _logger.LogDebug("使用者符合資格，開始處理權限和功能群組，UserId: {UserId}", loginUserId);
-            
-            // Get user's claims and function groups
-            var user = await _userManager.FindByIdAsync(userInfo.UserId);
-            if (user != null)
-            {
-                var claimsDictionary = await GetUserClaimsDictionaryAsync(user);
-                var functionGroupDtos = await GetFunctionGroupsAsync(cancellationToken);
 
-                // Process the function permissions based on claims
-                ProcessFunctionPermissions(functionGroupDtos, claimsDictionary);
+            var claimsDictionary = await GetUserClaimsDictionaryAsync(user);
+            var functionGroupDtos = await GetFunctionGroupsAsync(cancellationToken);
 
-                // Add function group DTOs or permissions info to userInfo if needed
-                userInfo.FunctionGroups = functionGroupDtos;
+            // Process the function permissions based on claims
+            ProcessFunctionPermissions(functionGroupDtos, claimsDictionary);
+
+            // Add function group DTOs or permissions info to userInfo if needed
+            userInfo.FunctionGroups = functionGroupDtos;
                 
-                _logger.LogDebug("成功處理使用者權限和功能群組，UserId: {UserId}", loginUserId);
-            }
-            else
-            {
-                _logger.LogWarning("找不到 ApplicationUser，UserId: {UserId}", loginUserId);
-            }
+            _logger.LogDebug("成功處理使用者權限和功能群組，UserId: {UserId}", loginUserId);
         }
         else
         {
@@ -325,8 +324,8 @@ public abstract class AbstractLoginUserInfoService : IUserService
 
         return userInfo;
     }
-    // 子類必須實現此方法來提供特定租戶的使用者資訊
-    protected abstract Task<LoginUserInfoDto> GetTenantUserInfoAsync(string loginUserId);
+    // 子類必須實現此方法來提供特定租戶的使用者資訊（只查 UserDetail 表，AspNetUsers 資料由 ApplicationUser 提供）
+    protected abstract Task<LoginUserInfoDto> GetTenantUserInfoAsync(string loginUserId, ApplicationUser user);
 
 
 
@@ -341,22 +340,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
     /// <returns>如果使用者屬於該租戶則返回true</returns>
     private async Task<bool> ValidateUserTenantAsync(string userId, string tenantId, CancellationToken cancellationToken)
     {
-        _logger.LogDebug("驗證使用者租戶關係，UserId: {UserId}, TenantId: {TenantId}", userId, tenantId);
-        
-        try
-        {
-            var isValid = await _unitOfWork.UserTenants.ExistsAsync(userId, tenantId, cancellationToken);
-            
-            _logger.LogDebug("租戶驗證結果 - UserId: {UserId}, TenantId: {TenantId}, IsValid: {IsValid}", 
-                userId, tenantId, isValid);
-            
-            return isValid;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "驗證使用者租戶關係時發生錯誤，UserId: {UserId}, TenantId: {TenantId}", userId, tenantId);
-            throw;
-        }
+        return await _unitOfWork.UserTenants.ExistsAsync(userId, tenantId, cancellationToken);
     }
 
     /// <summary>
@@ -393,14 +377,14 @@ public abstract class AbstractLoginUserInfoService : IUserService
         TriggerLoginNotification(
             userName: userName,
             officialEmail: null,
-            ipAddress: ipAddress ?? "Unknown",
+            ipAddress: ipAddress ?? UnknownValue,
             isSuccess: false,
-            failureReason: "帳號或密碼錯誤");
+            failureReason: InvalidCredentialsMessage);
         
         // 🔒 統一錯誤訊息，避免洩露帳號是否存在 (API8:2023)
         return new AuthenticateResponse
         {
-            OperationResult = new OperationResult(false, "帳號或密碼錯誤", StatusCodes.Status401Unauthorized)
+            OperationResult = new OperationResult(false, InvalidCredentialsMessage, StatusCodes.Status401Unauthorized)
         };
     }
     /// <summary>
@@ -449,7 +433,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 return false;
             }
 
-            var daysSinceChange = (DateTime.Now - lastPasswordChange.PasswordChangeDate).TotalDays;
+            var daysSinceChange = (DateTime.UtcNow - lastPasswordChange.PasswordChangeDate).TotalDays;
             var isExpired = daysSinceChange > passwordLimitDays;
             
             _logger.LogInformation("使用者 {UserId} 密碼距離上次變更 {DaysSinceChange:F1} 天，限制 {PasswordLimitDays} 天，是否過期: {IsExpired}", 
@@ -502,15 +486,15 @@ public abstract class AbstractLoginUserInfoService : IUserService
         TriggerLoginNotification(
             userName: userName ?? user.UserName ?? user.Email ?? user.Id,
             officialEmail: user.Email,
-            ipAddress: ipAddress ?? "Unknown",
+            ipAddress: ipAddress ?? UnknownValue,
             isSuccess: false,
-            failureReason: "帳號或密碼錯誤");
+            failureReason: InvalidCredentialsMessage);
 
         await ReMoveLoginUserInfoByCacheAsync(user, cancellationToken);
         // 🔒 統一錯誤訊息，避免洩露具體失敗原因 (API8:2023)
         return new AuthenticateResponse(GetEmptyloginUserInfoDto(user.Id), _dataProtectionService.Protect(user.Id), "")
         {
-            OperationResult = new OperationResult(false, "帳號或密碼錯誤", StatusCodes.Status401Unauthorized)
+            OperationResult = new OperationResult(false, InvalidCredentialsMessage, StatusCodes.Status401Unauthorized)
         };
     }
     /// <summary>
@@ -532,8 +516,6 @@ public abstract class AbstractLoginUserInfoService : IUserService
         
         try
         {
-            // 使用虛擬方法獲取當前租戶對應的使用者詳細資料
-            _logger.LogDebug("正在獲取使用者詳細資料，使用者: {UserId}", user.Id);
             var userDetail = await GetUserDetailAsync(user.Id, cancellationToken);
 
             if (userDetail == null)
@@ -543,10 +525,8 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 {
                     throw new InvalidOperationException("UserName cannot be null.");
                 }
-                return await UserDetailNotFoundResponseAsync(user.UserName, loginUserInfo, cancellationToken);
+                return await UserDetailNotFoundResponseAsync(user.UserName, loginUserInfo);
             }
-
-            _logger.LogDebug("成功獲取使用者詳細資料，使用者: {UserId}", user.Id);
 
             // 如果用戶處於鎖定狀態，且鎖定結束時間不為null，則解鎖用戶
             if (user.LockoutEnd != null)
@@ -558,40 +538,22 @@ public abstract class AbstractLoginUserInfoService : IUserService
             if (user.LockoutEnabled && user.AccessFailedCount < 3 && user.LockoutEnd == null)
             {
                 _logger.LogWarning("使用者 {UserId} 被手動鎖定", user.Id);
-                return await UserManuallyLockedResponseAsync(user, loginUserInfo, cancellationToken);
+                return await UserManuallyLockedResponseAsync(user, cancellationToken);
             }
 
             if (!user.IsActive)
             {
                 _logger.LogWarning("使用者 {UserId} 已停用", user.Id);
-                return await UserInactiveResponseAsync(user, loginUserInfo, cancellationToken);
+                return await UserInactiveResponseAsync(user, cancellationToken);
             }
 
             // 完成登入後復原使用者狀態
             await UnlockUserAsync(user);
 
             // 檢查密碼是否過期
-            _logger.LogDebug("檢查使用者 {UserId} 密碼是否過期", user.Id);
-            var lastPasswordChange = await _unitOfWork.PasswordHistories.GetLatestByUserIdAsync(user.Id, cancellationToken);
-
-            var maxPasswordAgeInDays = _configuration.GetValue<int>("SecuritySettings:MaxPasswordAgeInDays", 90);
-
-            if (lastPasswordChange != null)
-            {
-                var daysSinceChange = (DateTime.Now - lastPasswordChange.PasswordChangeDate).TotalDays;
-                _logger.LogDebug("使用者 {UserId} 密碼距離上次變更 {DaysSinceChange:F1} 天，限制 {MaxPasswordAgeInDays} 天", 
-                    user.Id, daysSinceChange, maxPasswordAgeInDays);
-                
-                if (daysSinceChange > maxPasswordAgeInDays)
-                {
-                    _logger.LogWarning("使用者 {UserId} 密碼已過期", user.Id);
-                    return await PasswordExpiredResponseAsync(user, loginUserInfo, cancellationToken);
-                }
-            }
-            else
-            {
-                _logger.LogInformation("使用者 {UserId} 沒有密碼變更歷史記錄", user.Id);
-            }
+            var passwordExpiryResponse = await CheckPasswordExpiryInSuccessFlowAsync(user, loginUserInfo, cancellationToken);
+            if (passwordExpiryResponse != null)
+                return passwordExpiryResponse;
 
             if (user.IsMigrated && !user.IsMigratedAndReSetPWed)
             {
@@ -619,13 +581,9 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 await _unitOfWork.RollbackAsync(cancellationToken);
                 throw;
             }
-            _logger.LogDebug("最後登入時間已更新，使用者: {UserId}", user.Id);
-            
             // 清除快取，異步執行以提升效能
             _ = Task.Run(() => ReMoveLoginUserInfoByCacheAsync(user, cancellationToken), cancellationToken);
 
-            // 重新獲取最新的使用者資訊
-            _logger.LogDebug("重新獲取使用者 {UserId} 登入資訊", user.Id);
             loginUserInfo = await GetLoginUserInfoAsync(user.Id, cancellationToken);
 
             // 生成存取令牌和刷新令牌
@@ -639,7 +597,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
             TriggerLoginNotification(
                 userName: userName ?? user.UserName ?? user.Email ?? user.Id,
                 officialEmail: user.Email,
-                ipAddress: ipAddress ?? "Unknown",
+ipAddress: ipAddress ?? UnknownValue,
                 isSuccess: true);
             
             return new AuthenticateResponse(loginUserInfo, _dataProtectionService.Protect(user.Id), accessToken, refreshToken);
@@ -654,6 +612,29 @@ public abstract class AbstractLoginUserInfoService : IUserService
             };
         }
     }
+
+    /// <summary>
+    /// 在成功登入流程中檢查密碼是否過期
+    /// </summary>
+    private async Task<AuthenticateResponse?> CheckPasswordExpiryInSuccessFlowAsync(
+        ApplicationUser user, LoginUserInfoDto loginUserInfo, CancellationToken cancellationToken)
+    {
+        var lastPasswordChange = await _unitOfWork.PasswordHistories.GetLatestByUserIdAsync(user.Id, cancellationToken);
+        var maxPasswordAgeInDays = _configuration.GetValue<int>("SecuritySettings:MaxPasswordAgeInDays", 90);
+
+        if (lastPasswordChange == null)
+            return null;
+
+        var daysSinceChange = (DateTime.UtcNow - lastPasswordChange.PasswordChangeDate).TotalDays;
+        if (daysSinceChange > maxPasswordAgeInDays)
+        {
+            _logger.LogWarning("使用者 {UserId} 密碼已過期", user.Id);
+            return await PasswordExpiredResponseAsync(user, loginUserInfo, cancellationToken);
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// 獲取使用者詳細資料，由子類實現具體租戶邏輯
     /// </summary>
@@ -696,34 +677,14 @@ public abstract class AbstractLoginUserInfoService : IUserService
     /// <param name="transaction"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    private async Task<AuthenticateResponse> UserDetailNotFoundResponseAsync(string userName, LoginUserInfoDto loginUserInfo, CancellationToken cancellationToken)
+    private Task<AuthenticateResponse> UserDetailNotFoundResponseAsync(string userName, LoginUserInfoDto loginUserInfo)
     {
         _logger.LogWarning("User {UserName} 使用者不存在.", userName);
 
-        return new AuthenticateResponse(loginUserInfo, _dataProtectionService.Protect(userName), "")
+        return Task.FromResult(new AuthenticateResponse(loginUserInfo, _dataProtectionService.Protect(userName), "")
         {
-            OperationResult = new OperationResult(false, "使用者不存在", StatusCodes.Status404NotFound)
-        };
-    }
-    /// <summary>
-    /// User not approved response
-    /// </summary>
-    /// <param name="user"></param>
-    /// <param name="loginUserInfo"></param>
-    /// <param name="transaction"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    private async Task<AuthenticateResponse> UserNotApprovedResponseAsync(ApplicationUser user, LoginUserInfoDto loginUserInfo, CancellationToken cancellationToken)
-    {
-        _logger.LogWarning("User {UserName} 尚未經過審核.", user.UserName);
-        // 清除快取，異步執行以提升效能
-        _ = Task.Run(() => ReMoveLoginUserInfoByCacheAsync(user, cancellationToken), cancellationToken);
-        loginUserInfo = await GetLoginUserInfoAsync(user.Id, cancellationToken);
-
-        return new AuthenticateResponse(loginUserInfo, _dataProtectionService.Protect(user.Id), await _jwtService.GenerateTokenAsync(user))
-        {
-            OperationResult = new OperationResult(false, "帳號尚未經過審核。請聯繫系統管理者。", StatusCodes.Status401Unauthorized)
-        };
+            OperationResult = new OperationResult(false, UserNotExistsMessage, StatusCodes.Status404NotFound)
+        });
     }
     /// <summary>
     /// User inactive response
@@ -733,12 +694,12 @@ public abstract class AbstractLoginUserInfoService : IUserService
     /// <param name="transaction"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    private async Task<AuthenticateResponse> UserInactiveResponseAsync(ApplicationUser user, LoginUserInfoDto loginUserInfo, CancellationToken cancellationToken)
+    private async Task<AuthenticateResponse> UserInactiveResponseAsync(ApplicationUser user, CancellationToken cancellationToken)
     {
         _logger.LogWarning("User {UserName} 停用中.", user.UserName);
         // 清除快取，異步執行以提升效能
         _ = Task.Run(() => ReMoveLoginUserInfoByCacheAsync(user, cancellationToken), cancellationToken);
-        loginUserInfo = await GetLoginUserInfoAsync(user.Id, cancellationToken);
+        var loginUserInfo = await GetLoginUserInfoAsync(user.Id, cancellationToken);
         return new AuthenticateResponse(loginUserInfo, _dataProtectionService.Protect(user.Id), "")
         {
             OperationResult = new OperationResult(false, "帳號停用中。請聯繫系統管理者。", StatusCodes.Status401Unauthorized)
@@ -752,12 +713,12 @@ public abstract class AbstractLoginUserInfoService : IUserService
     /// <param name="transaction"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    private async Task<AuthenticateResponse> UserManuallyLockedResponseAsync(ApplicationUser user, LoginUserInfoDto loginUserInfo, CancellationToken cancellationToken)
+    private async Task<AuthenticateResponse> UserManuallyLockedResponseAsync(ApplicationUser user, CancellationToken cancellationToken)
     {
         _logger.LogWarning("User {UserName} 帳號已被手動鎖定.", user.UserName);
         // 清除快取，異步執行以提升效能
         _ = Task.Run(() => ReMoveLoginUserInfoByCacheAsync(user, cancellationToken), cancellationToken);
-        loginUserInfo = await GetLoginUserInfoAsync(user.Id, cancellationToken);
+        var loginUserInfo = await GetLoginUserInfoAsync(user.Id, cancellationToken);
         return new AuthenticateResponse(loginUserInfo, _dataProtectionService.Protect(user.Id), "")
         {
             OperationResult = new OperationResult(false, "“帳號已被鎖定。請聯繫系統管理者”", StatusCodes.Status401Unauthorized)
@@ -829,7 +790,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
     /// <param name="transaction"></param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    private async Task<AuthenticateResponse> HandleExceptionAsync(Exception ex, CancellationToken cancellationToken)
+    private async Task<AuthenticateResponse> HandleExceptionAsync(Exception ex)
     {
         _logger.LogError(ex, "處理登入請求時發生錯誤");
         
@@ -871,10 +832,8 @@ public abstract class AbstractLoginUserInfoService : IUserService
             // 步驟1：解密使用者ID
             _logger.LogDebug("步驟1：解密使用者ID");
             unprotectedUserId = _dataProtectionService.Unprotect(request.ChangePassWordRequest.UserId);
-            _logger.LogDebug("成功解密使用者ID，UserId: {UserId}", unprotectedUserId);
             
             // 步驟2：查詢使用者
-            _logger.LogDebug("步驟2：查詢使用者資料，UserId: {UserId}", unprotectedUserId);
             var user = await _userManager.FindByIdAsync(unprotectedUserId);
             if (user == null) 
             {
@@ -882,52 +841,41 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 return UserNotFoundResponse();
             }
             userName = user.UserName;
-            _logger.LogInformation("步驟2成功：找到使用者，UserName: {UserName}", userName);
 
             // 步驟3：檢查新密碼是否與使用者名稱相同
-            _logger.LogDebug("步驟3：檢查新密碼是否與使用者名稱相同，UserName: {UserName}", userName);
             if (IsUserNameEqualsNewPassword(user, request.ChangePassWordRequest.NewPassword)) 
             {
                 _logger.LogWarning("步驟3失敗：新密碼與使用者名稱相同，UserName: {UserName}", userName);
                 return UserNameEqualsNewPassword();
             }
-            _logger.LogDebug("步驟3成功：新密碼與使用者名稱不同");
 
             // 步驟4：驗證當前密碼
-            _logger.LogDebug("步驟4：驗證當前密碼，UserName: {UserName}", userName);
             if (!await ValidateCurrentPasswordAsync(user, request.ChangePassWordRequest.Password)) 
             {
                 _logger.LogWarning("步驟4失敗：當前密碼驗證失敗，UserName: {UserName}", userName);
                 return InvalidPasswordResponse();
             }
-            _logger.LogDebug("步驟4成功：當前密碼驗證通過");
 
             // 步驟5：驗證新密碼與確認密碼是否一致
-            _logger.LogDebug("步驟5：驗證新密碼與確認密碼是否一致");
             if (!ValidateNewPassword(request.ChangePassWordRequest.NewPassword, request.ChangePassWordRequest.ConfirmPassword)) 
             {
                 _logger.LogWarning("步驟5失敗：新密碼與確認密碼不一致，UserName: {UserName}", userName);
                 return PasswordMismatchResponse();
             }
-            _logger.LogDebug("步驟5成功：新密碼與確認密碼一致");
 
             // 步驟6：檢查新密碼是否與前三次密碼相同
-            _logger.LogDebug("步驟6：檢查新密碼是否與前三次密碼相同，UserName: {UserName}", userName);
             if (await IsPasswordSameAsPreviousAsync(user, request.ChangePassWordRequest.NewPassword)) 
             {
                 _logger.LogWarning("步驟6失敗：新密碼與前三次密碼中的一次相同，UserName: {UserName}", userName);
                 return PasswordSameAsOldResponse();
             }
-            _logger.LogDebug("步驟6成功：新密碼與前三次密碼皆不同");
 
             // 步驟7：驗證密碼規則
-            _logger.LogDebug("步驟7：驗證密碼規則，UserName: {UserName}", userName);
             if (!await ValidatePasswordRules(user, request.ChangePassWordRequest.NewPassword)) 
             {
                 _logger.LogWarning("步驟7失敗：新密碼不符合密碼規則，UserName: {UserName}", userName);
                 return InvalidPasswordRulesResponse();
             }
-            _logger.LogDebug("步驟7成功：新密碼符合密碼規則");
 
             // 步驟8：變更密碼
             _logger.LogDebug("步驟8：執行密碼變更，UserName: {UserName}", userName);
@@ -936,26 +884,20 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 _logger.LogError("步驟8失敗：密碼變更失敗，UserName: {UserName}", userName);
                 return PasswordChangeFailedResponse();
             }
-            _logger.LogInformation("步驟8成功：密碼變更完成，UserName: {UserName}", userName);
 
             // 步驟9：儲存密碼歷史記錄
-            _logger.LogDebug("步驟9：儲存密碼歷史記錄，UserName: {UserName}", userName);
             if (!await SavePasswordHistoryAsync(user, request.ChangePassWordRequest.NewPassword, cancellationToken)) 
             {
                 _logger.LogError("步驟9失敗：密碼歷史記錄儲存失敗，UserName: {UserName}", userName);
                 return PasswordHistorySaveFailedResponse();
             }
-            _logger.LogDebug("步驟9成功：密碼歷史記錄儲存完成");
 
             // 步驟10：提交資料庫交易
             _logger.LogDebug("步驟10：提交資料庫交易，UserName: {UserName}", userName);
             await _unitOfWork.CommitAsync(cancellationToken);
-            _logger.LogDebug("步驟10成功：資料庫交易提交完成");
             
             // 步驟11：清除使用者快取
-            _logger.LogDebug("步驟11：清除使用者快取，UserName: {UserName}", userName);
             await ReMoveLoginUserInfoByCacheAsync(user, cancellationToken);
-            _logger.LogDebug("步驟11成功：使用者快取清除完成");
             
             stopwatch.Stop();
             _logger.LogInformation("修改密碼成功完成，UserName: {UserName}，總執行時間: {ElapsedMs}ms", 
@@ -967,8 +909,8 @@ public abstract class AbstractLoginUserInfoService : IUserService
         {
             stopwatch.Stop();
             _logger.LogError(ex, "修改密碼過程發生例外錯誤，UserName: {UserName}，UserId: {UserId}，執行時間: {ElapsedMs}ms，錯誤類型: {ExceptionType}，錯誤訊息: {ErrorMessage}", 
-                userName ?? "Unknown", 
-                unprotectedUserId ?? "Unknown", 
+                userName ?? UnknownValue, 
+                unprotectedUserId ?? UnknownValue, 
                 stopwatch.ElapsedMilliseconds,
                 ex.GetType().Name, 
                 ex.Message);
@@ -982,14 +924,13 @@ public abstract class AbstractLoginUserInfoService : IUserService
             catch (Exception rollbackEx)
             {
                 _logger.LogError(rollbackEx, "資料庫交易回滾失敗，UserName: {UserName}，回滾錯誤: {RollbackError}", 
-                    userName ?? "Unknown", rollbackEx.Message);
+                    userName ?? UnknownValue, rollbackEx.Message);
             }
             
             // 嘗試發送錯誤通知 Email，但不讓它影響主要流程
             try
             {
                 await _emailService.SendErrorEmailAsync(ex);
-                _logger.LogDebug("錯誤通知 Email 發送成功");
             }
             catch (Exception emailEx)
             {
@@ -1094,7 +1035,6 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "解密或驗證第 {Index} 次歷史密碼時發生錯誤，跳過此記錄，UserId: {UserId}", i + 1, user.Id);
-                    continue;
                 }
             }
             
@@ -1480,7 +1420,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
             {
                 return new AcctMaintainQueryVM
                 {
-                    OperationResult = new OperationResult(false, "使用者不存在", StatusCodes.Status404NotFound)
+                    OperationResult = new OperationResult(false, UserNotExistsMessage, StatusCodes.Status404NotFound)
                 };
             }
 
@@ -1490,7 +1430,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
             {
                 return new AcctMaintainQueryVM
                 {
-                    OperationResult = new OperationResult(false, "使用者不存在", StatusCodes.Status404NotFound)
+                    OperationResult = new OperationResult(false, UserNotExistsMessage, StatusCodes.Status404NotFound)
                 };
             }
            
@@ -1500,7 +1440,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 _logger.LogWarning("SkyLabDocUserDetail not found.");
                 return new AcctMaintainQueryVM
                 {
-                    OperationResult = new OperationResult(false, "使用者不存在", StatusCodes.Status404NotFound)
+                    OperationResult = new OperationResult(false, UserNotExistsMessage, StatusCodes.Status404NotFound)
                 };
             }
            
@@ -1654,7 +1594,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
         var emailDto = new EmailDto
         {
             To = new List<string> { "skyhsieh@skylab.com.tw",  "candy72@skylab.com.tw", "welcome09210801@skylab.com.tw" },
-            From = _configuration["MailSettings:EmailFrom"],
+            From = _configuration["MailSettings:EmailFrom"] ?? string.Empty,
             Subject = "[SkyLab查詢系統]註冊新帳號—審核已退回",
             Body = $"您好，於「SkyLab查詢系統」註冊的新帳號審核已退回，退回原因: {reasonsForDisapproval}，請至「SkyLab查詢系統」登入您申請的帳號及密碼，重新送出申請帳號資料，謝謝。此為系統自動發信，請勿回覆，謝謝您的配合。"
         };
@@ -1694,7 +1634,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
         });
     }
 
-    //TODO: 這裡的要依照租戶來確認
+    // NOTE: 租戶已透過多租戶架構處理（ITenantUserServiceFactory）
     /// <summary>
     /// Handle account query
     /// </summary>
@@ -1711,7 +1651,25 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 request.UserId = _dataProtectionService.Unprotect(request.UserId);
             }
 
-            var (items, totalCount) = await _unitOfWork.SkyLabDocUserDetails.GetAccountQueryAsync(request, cancellationToken);
+            // Status filter: 先用 UserManager 查符合狀態條件的 userIds
+            IEnumerable<string>? statusFilteredUserIds = null;
+            if (request.Status != 0)
+            {
+                var usersQuery = _userManager.Users.AsQueryable();
+                usersQuery = request.Status switch
+                {
+                    (int)UserInfo.StatusUnApprove => usersQuery.Where(u => !u.IsApproved),
+                    (int)UserInfo.StatusIsActive => usersQuery.Where(u => u.IsActive),
+                    (int)UserInfo.StatusLockoutEnabled => usersQuery.Where(u => u.LockoutEnabled),
+                    (int)UserInfo.StatusUnActive => usersQuery.Where(u => !u.IsActive && u.IsApproved),
+                    (int)UserInfo.StatusIsApproved => usersQuery.Where(u => u.IsApproved),
+                    _ => usersQuery
+                };
+                statusFilteredUserIds = usersQuery.Select(u => u.Id).ToList();
+            }
+
+            var (items, totalCount) = await _unitOfWork.SkyLabDocUserDetails
+                .GetAccountQueryAsync(request, statusFilteredUserIds, cancellationToken);
             var itemList = items.ToList();
 
             // 若無記錄
@@ -1742,9 +1700,38 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 };
             }
 
-            // 加密敏感欄位
+            // 批次查詢 Branch、FileUpload、User 狀態資料
+            var branchCodes = itemList.Select(i => i.BranchCode).Where(c => !string.IsNullOrEmpty(c)).Distinct();
+            var fileIds = itemList.Select(i => i.FileId).Where(f => !string.IsNullOrEmpty(f)).Distinct();
+            var userIds = itemList.Select(i => i.UserId).Distinct().ToList();
+
+            var branches = (await _unitOfWork.Branches.GetByCodesAsync(branchCodes, cancellationToken))
+                .ToDictionary(b => b.BranchCode);
+            var files = (await _unitOfWork.FileUploads.GetByIdsAsync(fileIds, cancellationToken))
+                .ToDictionary(f => f.FileId);
+            var appUsers = _userManager.Users
+                .Where(u => userIds.Contains(u.Id))
+                .ToDictionary(u => u.Id);
+
+            // LINQ 組合最終 DTO + 加密敏感欄位
             foreach (var dto in itemList)
             {
+                if (branches.TryGetValue(dto.BranchCode, out var branch))
+                    dto.BranchName = branch.BranchName;
+
+                if (files.TryGetValue(dto.FileId, out var file))
+                {
+                    dto.OriginalFileName = file.OriginalFileName;
+                    dto.FileExtension = file.FileExtension;
+                }
+
+                if (appUsers.TryGetValue(dto.UserId, out var appUser))
+                {
+                    dto.IsApproved = appUser.IsApproved;
+                    dto.IsActive = appUser.IsActive;
+                    dto.LockoutEnabled = appUser.LockoutEnabled;
+                }
+
                 dto.FileId = _dataProtectionService.Protect(dto.FileId);
                 dto.UserId = _dataProtectionService.Protect(dto.UserId);
                 dto.SystemRole = _dataProtectionService.Protect(dto.SystemRole);
@@ -1772,7 +1759,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
             };
         }
     }
-    //TODO: 這裡的要依照租戶來確認
+    // NOTE: 租戶已透過多租戶架構處理（ITenantUserServiceFactory）
     /// <summary>
     /// Handle account maintain query
     /// </summary>
@@ -1797,7 +1784,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
             {
                 return new AcctMaintainQueryVM
                 {
-                    OperationResult = new OperationResult(false, "使用者不存在", StatusCodes.Status404NotFound)
+                    OperationResult = new OperationResult(false, UserNotExistsMessage, StatusCodes.Status404NotFound)
                 };
             }
 
@@ -1882,21 +1869,28 @@ public abstract class AbstractLoginUserInfoService : IUserService
     /// <returns></returns>
     protected virtual async Task<List<FunctionGroupDto>> GetFunctionGroupsAsync(CancellationToken cancellationToken)
     {
-        var groups = await _unitOfWork.FunctionGroups.GetAllWithFunctionsAsync(cancellationToken);
+        var groups = (await _unitOfWork.FunctionGroups.GetAllAsync(cancellationToken)).ToList();
+        var groupIds = groups.Select(g => g.GroupID);
+        var functions = (await _unitOfWork.Functions.GetByGroupIdsAsync(groupIds, cancellationToken))
+            .GroupBy(f => f.GroupID)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
         return groups.Select(fg => new FunctionGroupDto
         {
             GroupID = fg.GroupID,
             GroupEnglishDescription = fg.GroupEnglishDescription,
             GroupChineseDescription = fg.GroupChineseDescription,
             GroupOrder = fg.GroupOrder,
-            Functions = fg.Functions.Select(f => new FunctionDto
-            {
-                GroupID = f.GroupID,
-                FunctionID = f.FunctionID,
-                FunctionEnglishDescription = f.FunctionEnglishDescription,
-                FunctionChineseDescription = f.FunctionChineseDescription,
-                FunctionOrder = f.FunctionOrder
-            }).ToList()
+            Functions = functions.TryGetValue(fg.GroupID, out var fns)
+                ? fns.Select(f => new FunctionDto
+                {
+                    GroupID = f.GroupID,
+                    FunctionID = f.FunctionID,
+                    FunctionEnglishDescription = f.FunctionEnglishDescription,
+                    FunctionChineseDescription = f.FunctionChineseDescription,
+                    FunctionOrder = f.FunctionOrder
+                }).ToList()
+                : []
         }).ToList();
     }
     /// <summary>
@@ -1997,7 +1991,7 @@ public abstract class AbstractLoginUserInfoService : IUserService
                 return new OperationResult(false, "操作失敗，請確認您的註冊資訊", StatusCodes.Status400BadRequest);
             }
 
-            _logger.LogInformation("找到用戶: {UserName}, Email: {Email}, 外部提供者: {Provider}",
+            _logger.LogDebug("找到用戶: {UserName}, Email: {Email}, 外部提供者: {Provider}",
                 user.UserName, user.Email, user.ExternalProvider);
 
             // 獲取用戶詳情 (由子類實現的租戶特定邏輯)

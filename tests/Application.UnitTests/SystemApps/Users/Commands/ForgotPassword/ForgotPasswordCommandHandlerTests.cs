@@ -121,7 +121,7 @@ namespace Application.UnitTests.SystemApps.Users.Commands.ForgotPassword
 
             // 設定租戶配置為空（未知租戶）
             var tenantSection = new Mock<IConfigurationSection>();
-            tenantSection.Setup(x => x["UnknownTenant"]).Returns((string)null);
+            tenantSection.Setup(x => x["UnknownTenant"]).Returns((string?)null);
             _configurationMock.Setup(x => x.GetSection("TenantResetPasswordUrls")).Returns(tenantSection.Object);
 
             _emailServiceMock.Setup(x => x.SendAsync(It.IsAny<EmailDto>()))

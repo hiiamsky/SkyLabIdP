@@ -49,7 +49,7 @@
                     {
                         try
                         {
-                            return dataProtectionService.Unprotect(protectedUserId);
+                            return DataProtectionService.Unprotect(protectedUserId);
                         }
                         catch (Exception ex)
                         {

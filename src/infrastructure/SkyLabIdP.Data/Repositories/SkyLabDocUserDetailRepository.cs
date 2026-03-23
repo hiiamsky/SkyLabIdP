@@ -1,11 +1,9 @@
 using System.Data;
 using Dapper;
 using SkyLabIdP.Application.Common.Interfaces.Repositories;
-using SkyLabIdP.Application.Dtos.LoginUserInfo;
 using SkyLabIdP.Application.Dtos.SkyLabDocUserDetail;
 using SkyLabIdP.Application.SystemApps.SystemAdministration.AcctMgmt.Accounts.Queries;
 using SkyLabIdP.Domain.Entities;
-using SkyLabIdP.Domain.Enums;
 
 namespace SkyLabIdP.Data.Repositories;
 
@@ -35,38 +33,6 @@ public class SkyLabDocUserDetailRepository : ISkyLabDocUserDetailRepository
             sql,
             new { UserId = userId },
             _transaction);
-    }
-
-    public async Task<LoginUserInfoDto> GetTenantUserInfoAsync(string userId, CancellationToken cancellationToken = default)
-    {
-        const string sql = """
-            SELECT ud.UserId, au.IsActive, au.IsApproved, au.LockoutEnabled,
-                   ud.BranchCode, ud.RegionCode, ud.SystemRole, ud.UserName, ud.OfficialEmail
-            FROM [SkyLabDocUserDetail] ud
-            JOIN [AspNetUsers] au ON au.Id = ud.UserId
-            WHERE ud.UserId = @UserId
-            """;
-
-        var row = await _connection.QueryFirstOrDefaultAsync(
-            sql,
-            new { UserId = userId },
-            _transaction);
-
-        if (row == null) return new LoginUserInfoDto();
-
-        return new LoginUserInfoDto
-        {
-            UserId = row.UserId ?? "",
-            IsActive = row.IsActive,
-            IsApproved = row.IsApproved,
-            LockoutEnabled = row.LockoutEnabled,
-            IsUserEligible = (bool)row.IsActive && !(bool)row.LockoutEnabled,
-            BranchCode = row.BranchCode ?? "",
-            RegionCode = row.RegionCode ?? "",
-            SystemRole = row.SystemRole ?? "",
-            UserName = row.UserName ?? "",
-            OfficialEmail = row.OfficialEmail ?? ""
-        };
     }
 
     public async Task UpdateLastLoginTimeAsync(string userId, DateTime loginTime, CancellationToken cancellationToken = default)
@@ -152,79 +118,56 @@ public class SkyLabDocUserDetailRepository : ISkyLabDocUserDetailRepository
     }
 
     public async Task<(IEnumerable<SkyLabDocUserDetailDto> Items, int TotalCount)> GetAccountQueryAsync(
-        AccountQuery request, CancellationToken cancellationToken = default)
+        AccountQuery request, IEnumerable<string>? userIds = null, CancellationToken cancellationToken = default)
     {
         var whereClauses = new List<string>();
         var parameters = new DynamicParameters();
 
         if (!string.IsNullOrEmpty(request.FullName))
         {
-            whereClauses.Add("ud.FullName LIKE '%' + @FullName + '%'");
+            whereClauses.Add("FullName LIKE '%' + @FullName + '%'");
             parameters.Add("FullName", request.FullName);
         }
         if (!string.IsNullOrEmpty(request.UserName))
         {
-            whereClauses.Add("ud.UserName = @UserName");
+            whereClauses.Add("UserName = @UserName");
             parameters.Add("UserName", request.UserName);
         }
         if (!string.IsNullOrEmpty(request.OfficialEmail))
         {
-            whereClauses.Add("ud.OfficialEmail = @OfficialEmail");
+            whereClauses.Add("OfficialEmail = @OfficialEmail");
             parameters.Add("OfficialEmail", request.OfficialEmail);
         }
         if (!string.IsNullOrEmpty(request.BranchCode))
         {
-            whereClauses.Add("ud.BranchCode = @BranchCode");
+            whereClauses.Add("BranchCode = @BranchCode");
             parameters.Add("BranchCode", request.BranchCode);
         }
         if (!string.IsNullOrEmpty(request.UserId))
         {
-            whereClauses.Add("au.Id = @UserId");
+            whereClauses.Add("UserId = @UserId");
             parameters.Add("UserId", request.UserId);
         }
-
-        // Status filter based on UserInfo enum
-        switch (request.Status)
+        if (userIds != null)
         {
-            case (int)UserInfo.StatusUnApprove:
-                whereClauses.Add("au.IsApproved = 0");
-                break;
-            case (int)UserInfo.StatusIsActive:
-                whereClauses.Add("au.IsActive = 1");
-                break;
-            case (int)UserInfo.StatusLockoutEnabled:
-                whereClauses.Add("au.LockoutEnabled = 1");
-                break;
-            case (int)UserInfo.StatusUnActive:
-                whereClauses.Add("au.IsActive = 0 AND au.IsApproved = 1");
-                break;
-            case (int)UserInfo.StatusIsApproved:
-                whereClauses.Add("au.IsApproved = 1");
-                break;
+            whereClauses.Add("UserId IN @UserIds");
+            parameters.Add("UserIds", userIds);
         }
 
         var whereClause = whereClauses.Count > 0 ? "WHERE " + string.Join(" AND ", whereClauses) : "";
 
         var countSql = $"""
             SELECT COUNT(1)
-            FROM [SkyLabDocUserDetail] ud
-            JOIN [AspNetUsers] au ON au.Id = ud.UserId
-            JOIN [Branch] b ON b.BranchCode = ud.BranchCode
-            JOIN [FileUpload] fu ON fu.FileId = ud.FileId
+            FROM [SkyLabDocUserDetail]
             {whereClause}
             """;
 
         var dataSql = $"""
-            SELECT ud.UserId, ud.SystemRole, ud.FileId, fu.OriginalFileName, fu.FileExtension,
-                   ud.UserName, ud.FullName, ud.BranchCode, b.BranchName,
-                   ud.SubordinateUnit, ud.JobTitle, ud.OfficialEmail, ud.OfficialPhone,
-                   au.IsApproved, au.LockoutEnabled, au.IsActive, ud.MoicaCardNumber
-            FROM [SkyLabDocUserDetail] ud
-            JOIN [AspNetUsers] au ON au.Id = ud.UserId
-            JOIN [Branch] b ON b.BranchCode = ud.BranchCode
-            JOIN [FileUpload] fu ON fu.FileId = ud.FileId
+            SELECT UserId, SystemRole, FileId, UserName, FullName, BranchCode,
+                   SubordinateUnit, JobTitle, OfficialEmail, OfficialPhone, MoicaCardNumber
+            FROM [SkyLabDocUserDetail]
             {whereClause}
-            ORDER BY ud.BranchCode, ud.UserName
+            ORDER BY BranchCode, UserName
             OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY
             """;
 
@@ -265,43 +208,6 @@ public class SkyLabDocUserDetailRepository : ISkyLabDocUserDetailRepository
     {
         const string sql = "SELECT CASE WHEN EXISTS (SELECT 1 FROM [SkyLabDocUserDetail] WHERE UserId = @UserId AND FileId = @FileId) THEN 1 ELSE 0 END";
         return await _connection.ExecuteScalarAsync<bool>(sql, new { UserId = userId, FileId = fileId }, _transaction);
-    }
-
-    public async Task<SkyLabDocUserDetail?> GetByUserIdWithApprovalCheckAsync(string userId, bool requireUnapproved, CancellationToken cancellationToken = default)
-    {
-        var approvalCondition = requireUnapproved ? "AND au.IsApproved = 0" : "";
-        var sql = $"""
-            SELECT ud.SerialNo, ud.UserId, ud.SystemRole, ud.FileId, ud.UserName, ud.FullName,
-                   ud.BranchCode, ud.RegionCode, ud.DepartmentName, ud.SubordinateUnit, ud.JobTitle,
-                   ud.OfficialEmail, ud.OfficialPhone, ud.LastLoginDatetime, ud.CreateBy, ud.CreateDatetime,
-                   ud.LastUpdatedBy, ud.LastUpdateDatetime, ud.MoicaCardNumber, ud.UserTenantGuid
-            FROM [SkyLabDocUserDetail] ud
-            JOIN [AspNetUsers] au ON au.Id = ud.UserId
-            WHERE ud.UserId = @UserId {approvalCondition}
-            """;
-
-        return await _connection.QueryFirstOrDefaultAsync<SkyLabDocUserDetail>(
-            sql,
-            new { UserId = userId },
-            _transaction);
-    }
-
-    public async Task<SkyLabDocUserDetail?> GetByUserIdWithActiveApprovedCheckAsync(string userId, CancellationToken cancellationToken = default)
-    {
-        const string sql = """
-            SELECT ud.SerialNo, ud.UserId, ud.SystemRole, ud.FileId, ud.UserName, ud.FullName,
-                   ud.BranchCode, ud.RegionCode, ud.DepartmentName, ud.SubordinateUnit, ud.JobTitle,
-                   ud.OfficialEmail, ud.OfficialPhone, ud.LastLoginDatetime, ud.CreateBy, ud.CreateDatetime,
-                   ud.LastUpdatedBy, ud.LastUpdateDatetime, ud.MoicaCardNumber, ud.UserTenantGuid
-            FROM [SkyLabDocUserDetail] ud
-            JOIN [AspNetUsers] au ON au.Id = ud.UserId
-            WHERE ud.UserId = @UserId AND au.IsApproved = 1 AND au.IsActive = 1 AND au.LockoutEnabled = 0
-            """;
-
-        return await _connection.QueryFirstOrDefaultAsync<SkyLabDocUserDetail>(
-            sql,
-            new { UserId = userId },
-            _transaction);
     }
 
     public async Task UpdateFileIdAsync(string userId, string fileId, string lastUpdatedBy, DateTime lastUpdateDatetime, CancellationToken cancellationToken = default)

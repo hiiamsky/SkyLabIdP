@@ -40,7 +40,7 @@ public class AuditLog
     public string? IPAddress { get; set; }
     public string? UserAgent { get; set; }
 
-    public Dictionary<string, string> AdditionalInfo { get; set; }
+    public required Dictionary<string, string> AdditionalInfo { get; set; }
 
     [JsonIgnore]
     public virtual ICollection<string> ExcludedPaths { get; } = new List<string>

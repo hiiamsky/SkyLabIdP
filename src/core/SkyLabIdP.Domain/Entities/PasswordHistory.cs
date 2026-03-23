@@ -8,11 +8,11 @@ namespace SkyLabIdP.Domain.Entities
     {
         [Key]
         public int SerialNo { get; set; }
-        public string UserId { get; set; }
-        public string HashedPassword { get; set; }
-        public string PasswordSalt { get; set; }
+        public string UserId { get; set; } = string.Empty;
+        public string HashedPassword { get; set; } = string.Empty;
+        public string PasswordSalt { get; set; } = string.Empty;
         public DateTime PasswordChangeDate { get; set; }
 
-        public ApplicationUser User { get; set; }
+        public ApplicationUser User { get; set; } = null!;
     }
 }

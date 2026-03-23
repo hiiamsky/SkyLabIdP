@@ -12,6 +12,7 @@ public interface IUnitOfWork : IAsyncDisposable
     IAuditLogRepository AuditLogs { get; }
     IBranchRepository Branches { get; }
     IFunctionGroupRepository FunctionGroups { get; }
+    IFunctionRepository Functions { get; }
     IFileUploadRepository FileUploads { get; }
     ISysCodeRepository SysCodes { get; }
     IBranchAreaRepository BranchAreas { get; }

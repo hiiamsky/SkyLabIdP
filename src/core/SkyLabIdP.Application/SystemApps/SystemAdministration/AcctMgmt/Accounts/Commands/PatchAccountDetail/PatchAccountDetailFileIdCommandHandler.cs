@@ -1,8 +1,10 @@
 ﻿using SkyLabIdP.Application.Common.Interfaces;
 using SkyLabIdP.Application.Dtos;
 using SkyLabIdP.Application.Dtos.SkyLabDocUserDetail;
+using SkyLabIdP.Domain.Entities;
 using Mediator;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
 
 namespace SkyLabIdP.Application.SystemApps.SystemAdministration.AcctMgmt.Accounts.Commands.PatchAccountDetail
@@ -13,20 +15,33 @@ namespace SkyLabIdP.Application.SystemApps.SystemAdministration.AcctMgmt.Account
 
         private readonly IDataProtectionService _dataprotectionservice;
 
+        private readonly UserManager<ApplicationUser> _userManager;
+
         private readonly ILogger<PatchAccountDetailFileIdCommandHandler> _logger;
 
-        public PatchAccountDetailFileIdCommandHandler(IUnitOfWork unitOfWork, IDataProtectionService dataprotectionservice , ILogger<PatchAccountDetailFileIdCommandHandler> logger)
+        public PatchAccountDetailFileIdCommandHandler(IUnitOfWork unitOfWork, IDataProtectionService dataprotectionservice, UserManager<ApplicationUser> userManager, ILogger<PatchAccountDetailFileIdCommandHandler> logger)
         {
             _unitOfWork = unitOfWork;
 
             _dataprotectionservice = dataprotectionservice;
 
+            _userManager = userManager;
+
             _logger = logger;
         }
         public async ValueTask<SkyLabDocUserDetailResponse> Handle(PatchAccountDetailFileIdCommand request, CancellationToken cancellationToken)
         {
+            var appUser = await _userManager.FindByIdAsync(request.UserId);
+            if (appUser == null || appUser.IsApproved)
+            {
+                return new SkyLabDocUserDetailResponse
+                {
+                    operationResult = new OperationResult(false, "無使用者資訊或是已經通過審核", StatusCodes.Status404NotFound)
+                };
+            }
+
             var skylabDocUserDetail = await _unitOfWork.SkyLabDocUserDetails
-                .GetByUserIdWithApprovalCheckAsync(request.UserId, requireUnapproved: true, cancellationToken);
+                .GetByUserIdAsync(request.UserId, cancellationToken);
 
             if (skylabDocUserDetail == null)
             {

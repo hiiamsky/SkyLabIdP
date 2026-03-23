@@ -25,6 +25,7 @@ namespace SkyLabIdP.WebApi.Controllers.v1
     /// <param name="logger"></param>
     /// <param name="configuration"></param>
     /// <param name="provider"></param>
+    /// <param name="mediator"></param>
     [ApiVersion("1.0")]
     [Route("skylabidp/api/v{version:apiVersion}/[controller]")]
     [ApiController]
@@ -49,7 +50,7 @@ namespace SkyLabIdP.WebApi.Controllers.v1
         [AllowAnonymous]
         public IActionResult Login([FromRoute] string provider, [FromQuery] string tenantId = "")
         {
-            _logger.LogInformation("開始外部登入流程，提供者: {Provider}", provider);
+            _logger.LogDebug("開始外部登入流程，提供者: {Provider}", provider);
 
             if (string.IsNullOrEmpty(provider))
             {
@@ -79,7 +80,7 @@ namespace SkyLabIdP.WebApi.Controllers.v1
                     "google" => "Google",
                     _ => throw new ArgumentException($"不支援的提供者: {provider}")
                 };
-                _logger.LogInformation("已映射提供者 {Provider} 到認證方案 {Scheme}", provider, scheme);
+                _logger.LogDebug("已映射提供者 {Provider} 到認證方案 {Scheme}", provider, scheme);
              
 
             _logger.LogInformation("重定向到外部提供者 {Scheme} 進行認證", scheme);
@@ -93,9 +94,9 @@ namespace SkyLabIdP.WebApi.Controllers.v1
         /// <returns>重定向到前端應用程序</returns>
         [HttpGet("callback")]
         [AllowAnonymous]
-        public async Task<IActionResult> Callback([FromQuery] string error = null)
+        public async Task<IActionResult> Callback([FromQuery] string? error = null)
         {
-            _logger.LogInformation("收到外部登入回調請求");
+            _logger.LogDebug("收到外部登入回調請求");
 
             // 檢查是否有錯誤
             if (!string.IsNullOrEmpty(error))
@@ -119,14 +120,14 @@ namespace SkyLabIdP.WebApi.Controllers.v1
                 {
                     HttpContext.Items["Tenant"] = tenantIdFromState;
                 }
-                _logger.LogInformation("外部認證成功，提供者: {Scheme}", scheme);
+                _logger.LogDebug("外部認證成功，提供者: {Scheme}", scheme);
 
                 // 從認證結果獲取必要信息
-                var externalUserId = result.Principal.FindFirstValue(ClaimTypes.NameIdentifier);
+                var externalUserId = result.Principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
                 var email = result.Principal.FindFirstValue(ClaimTypes.Email) ?? "";
                 var name = result.Principal.FindFirstValue(ClaimTypes.Name) ?? "";
 
-                _logger.LogInformation("外部用戶信息: ID={ExternalUserId}, Email={Email}, Name={Name}",
+                _logger.LogDebug("外部用戶信息: ID={ExternalUserId}, Email={Email}, Name={Name}",
                     externalUserId, email, name);
 
                 // 記錄所有索取的聲明
@@ -134,7 +135,6 @@ namespace SkyLabIdP.WebApi.Controllers.v1
                 _logger.LogDebug("外部登入取得的所有聲明: {Claims}", string.Join(", ", allClaims));
 
                 // 調用外部登入處理服務
-                _logger.LogInformation("開始處理外部登入");
                 var response = await _externalLoginHandler.HandleExternalLoginAsync(
                     externalUserId,
                     scheme,
@@ -206,7 +206,7 @@ namespace SkyLabIdP.WebApi.Controllers.v1
         /// </summary>
         private IActionResult RedirectToFrontend(string status, string message, string token = "")
         {
-            var frontendUrl = _configuration["AppSettings:FrontendUrl"] ?? "http://localhost:3000";
+            var frontendUrl = _configuration["AppSettings:FrontendUrl"] ?? _configuration["AppSettings:DefaultFrontendUrl"] ?? "localhost";
             var redirectUrl = $"{frontendUrl}/auth-callback?status={Uri.EscapeDataString(status)}&message={Uri.EscapeDataString(message)}";
 
             if (!string.IsNullOrEmpty(token))

@@ -8,11 +8,11 @@ namespace SkyLabIdP.Domain.Entities
         [Key]
         [Required]
         [MaxLength(450)]
-        public string GroupID { get; set; }
+        public string GroupID { get; set; } = string.Empty;
 
         [Required]
         [MaxLength(450)]
-        public string FunctionID { get; set; }
+        public string FunctionID { get; set; } = string.Empty;
 
         [Required]
         [MaxLength(100)]
@@ -41,8 +41,8 @@ namespace SkyLabIdP.Domain.Entities
 
         // Navigation property back to the Group
         [ForeignKey("GroupID")]
-        public FunctionGroup FunctionGroup { get; set; }
+        public FunctionGroup FunctionGroup { get; set; } = null!;
 
-        public ICollection<PolicyConfiguration> PolicyConfigurations { get; set; }
+        public ICollection<PolicyConfiguration> PolicyConfigurations { get; set; } = [];
     }
 }

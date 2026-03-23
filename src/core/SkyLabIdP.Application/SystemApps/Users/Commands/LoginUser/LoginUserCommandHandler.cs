@@ -2,8 +2,6 @@
 using SkyLabIdP.Application.Dtos.User.Authentication;
 using SkyLabIdP.Application.SystemApps.Users.Commands.LoginUser.Services;
 using Mediator;
-using Microsoft.Extensions.Logging;
-using System;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -13,15 +11,13 @@ namespace SkyLabIdP.Application.SystemApps.Users.Commands.LoginUser
     /// 使用者登入命令處理器
     /// </summary>
     public class LoginUserCommandHandler(
-        ITenantUserServiceFactory tenantUserServiceFactory,
-        ILogger<LoginUserCommandHandler> logger) : IRequestHandler<LoginUserCommand, AuthenticateResponse>
+        ITenantUserServiceFactory tenantUserServiceFactory) : IRequestHandler<LoginUserCommand, AuthenticateResponse>
     {
         private readonly ITenantUserServiceFactory _tenantUserServiceFactory = tenantUserServiceFactory;
-        private readonly ILogger<LoginUserCommandHandler> _logger = logger;
 
         public async ValueTask<AuthenticateResponse> Handle(LoginUserCommand request, CancellationToken cancellationToken)
         {
-            var loginService = _tenantUserServiceFactory.GetServiceByTenantId(request.TenantId);
+            var loginService = _tenantUserServiceFactory.GetServiceByTenantId(request.TenantId ?? string.Empty);
             return await loginService.HandleLoginUserCommandAsync(request, cancellationToken);
         }
     }
