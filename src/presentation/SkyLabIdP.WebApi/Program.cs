@@ -15,6 +15,9 @@ builder.Services.AddCoreServices(builder.Configuration)
 builder.Services.AddRedisCache()
                 .AddOutputCacheServices();
 
+// 配置健康檢查服務
+builder.Services.AddHealthCheckServices();
+
 // 配置可觀測性服務
 builder.Services.AddOpenTelemetryObservability();
 
@@ -34,4 +37,5 @@ app.ApplyDatabaseMigrations();
 await app.ConfigureMiddlewarePipelineAsync();
 
 
-
+// Make the implicit Program class accessible for WebApplicationFactory<Program>
+public partial class Program { }

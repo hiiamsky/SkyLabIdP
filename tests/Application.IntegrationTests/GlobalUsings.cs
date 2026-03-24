@@ -1,1 +1,4 @@
-global using Xunit;global using SkyLabIdP.Application.Common.Mappings;
+global using Xunit;
+global using Application.IntegrationTests.Common;
+global using Application.IntegrationTests.Fixtures;
+global using Application.IntegrationTests.Models;

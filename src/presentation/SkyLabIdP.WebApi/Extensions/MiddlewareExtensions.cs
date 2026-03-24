@@ -115,6 +115,7 @@ namespace SkyLabIdP.WebApi.Extensions
                    .UseCustomMiddleware()
                    .UseAuthenticationMiddleware();
 
+                app.MapHealthCheckEndpoints();
                 app.MapControllers();  // 使用頂層路由註冊
                 
                 await app.RunAsync();
