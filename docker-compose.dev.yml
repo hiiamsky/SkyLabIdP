@@ -1,0 +1,14 @@
+# 開發環境用 — 提供 Aspire Dashboard 接收 OpenTelemetry 資料
+# 啟動: docker compose -f docker-compose.dev.yml up -d
+# UI:   http://localhost:18888
+
+services:
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+    container_name: aspire-dashboard
+    ports:
+      - "18888:18888"   # Dashboard UI
+      - "4317:18889"    # OTLP gRPC (app 端用 localhost:4317)
+    environment:
+      - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true
+    restart: unless-stopped

@@ -15,6 +15,9 @@ builder.Services.AddCoreServices(builder.Configuration)
 builder.Services.AddRedisCache()
                 .AddOutputCacheServices();
 
+// 配置可觀測性服務
+builder.Services.AddOpenTelemetryObservability();
+
 // 配置安全性服務
 builder.Services.AddCorsPolicy(builder.Configuration, builder.Environment)
                 .AddCookiePolicy(builder.Environment);

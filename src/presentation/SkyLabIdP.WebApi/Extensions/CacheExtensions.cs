@@ -34,7 +34,11 @@ namespace SkyLabIdP.WebApi.Extensions
                 redisOptions.User = redisUser;
             }
 
-            // 註冊 Redis
+            // 註冊 IConnectionMultiplexer 為 singleton（供 OTel Redis instrumentation 及其他直接操作共用）
+            services.AddSingleton<IConnectionMultiplexer>(sp =>
+                ConnectionMultiplexer.Connect(redisOptions));
+
+            // 註冊 Redis 分散式快取
             services.AddStackExchangeRedisCache(options =>
             {
                 options.ConfigurationOptions = redisOptions;
